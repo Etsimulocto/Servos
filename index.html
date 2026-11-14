@@ -190,7 +190,7 @@ setInterval(async()=>{
   const b=state.bindings[String(s.id)];
   if(!b)continue;
   const delta=(inputActive(b.positive)?1:0)-(inputActive(b.negative)?1:0);
-  if(delta){const next=Math.max(s.map_min,Math.min(s.map_max,s.angle+delta*s.speed));if(next!==s.angle)chosen={channel:s.id,angle:next,source:'mapped'};break}
+  if(delta){const next=Math.max(s.map_min,Math.min(s.map_max,s.angle+delta*(s.speed??4)));if(next!==s.angle)chosen={channel:s.id,angle:next,source:'mapped'};break}
  }
  if(chosen){lastInputTime=Date.now();await request('angle',chosen)}
 },50);
@@ -203,12 +203,12 @@ async function request(action,extra={}){
  catch(e){error(e.message)}finally{busy=false}
 }
 function render(){
- $('#mode').textContent=state.mode;$('#mode').className='badge '+(state.mode==='HARDWARE'?'good':'warn');
+ $('#mode').textContent=state.mode+' v'+state.version;$('#mode').className='badge '+(state.mode==='HARDWARE'?'good':'warn');
  $('#armed').textContent=state.armed?'ARMED':'DISARMED';$('#armed').className='badge '+(state.armed?'good':'warn');
  $('#arm').disabled=state.armed;
  const root=$('#servos');root.replaceChildren();
  for(const s of state.servos){
-  const card=el('article','card '+(s.connected?'connected':'reserved'));const top=el('div','top');
+  const card=el('article','card '+(s.connected?'connected':'reserved'));root.append(card);const top=el('div','top');
   top.append(el('span','channel','CH '+String(s.id).padStart(2,'0')),el('span','status',s.connected?(s.armed?(s.output?'ARMED / PWM ACTIVE':'ARMED / IDLE'):'DISARMED'):'RESERVED'));
   const name=el('input','name');name.value=s.name;name.maxLength=32;name.setAttribute('aria-label','Servo '+(s.id+1)+' name');
   name.addEventListener('change',()=>request('rename',{channel:s.id,name:name.value}));
@@ -261,10 +261,10 @@ function render(){
 
   const speedPanel=el('div','cal');
   speedPanel.append(el('div','mapper-title','GAMEPAD MOVEMENT SPEED'));
-  const speedLabel=el('label','status','Step size: '+s.speed+'° / 125 ms');
+  const speedLabel=el('label','status','Step size: '+(s.speed??4)+'° / 125 ms');
   const speedInput=el('input');
   speedInput.type='range';speedInput.min=1;speedInput.max=8;speedInput.step=1;
-  speedInput.value=s.speed;speedInput.disabled=s.armed;
+  speedInput.value=s.speed??4;speedInput.disabled=s.armed;
   speedInput.oninput=()=>speedLabel.textContent='Step size: '+speedInput.value+'° / 125 ms';
   const speedSave=el('button','','SAVE SPEED');
   speedSave.disabled=s.armed;
@@ -280,7 +280,7 @@ function render(){
    const clear=el('button','clear','×');clear.title='Clear binding';clear.onclick=()=>request('binding',{channel:s.id,direction,binding:null});
    wrap.append(label,captureButton,clear);mapper.append(wrap)
   }
-  card.append(top,armRow,name,number,range,actions,cal,mappingLimits,speedPanel,mapper);root.append(card)
+  card.append(top,armRow,name,number,range,actions,cal,mappingLimits,speedPanel,mapper)
  }
  const motors=$('#motors');motors.replaceChildren();
  for(const m of state.motors){const c=el('article','card reserved');const top=el('div','top');
@@ -292,6 +292,8 @@ $('#copylog').onclick=copyDiagnosticReport;
 $('#snapshot').onclick=()=>{freezeLog=!freezeLog;$('#snapshot').textContent=freezeLog?'RESUME LIVE REPORT':'FREEZE / REFRESH SNAPSHOT';refreshDiagnosticReport(true)};
 $('#clearlog').onclick=()=>{events.length=0;refreshDiagnosticReport(true);$('#copy-status').textContent='Events cleared'};
 $('#arm').onclick=async()=>{keys.clear();axisReady.clear();await request('arm')};$('#release').onclick=()=>request('release_all');$('#stop').onclick=()=>{keys.clear();axisReady.clear();request('stop')};
-fetch('/api/state').then(r=>{if(!r.ok)throw Error('Server unavailable');return r.json()}).then(s=>{state=s;logEvent('Dashboard connected',s.mode);render();refreshDiagnosticReport(true)}).catch(e=>error(e.message));
+fetch('/api/state').then(r=>{if(!r.ok)throw Error('Server unavailable');return r.json()}).then(s=>{state=s;logEvent('Dashboard connected',s.mode+' '+s.version);render();refreshDiagnosticReport(true)}).catch(e=>error(e.message));
+window.addEventListener('error',e=>error('JavaScript error: '+e.message+' at line '+e.lineno));
+window.addEventListener('unhandledrejection',e=>error('JavaScript rejection: '+String(e.reason)));
 </script>
 </body></html>
