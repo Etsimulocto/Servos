@@ -77,7 +77,7 @@ function diagnosticReport(){
  for(const c of state?.servos||[]){
   const b=state.bindings?.[String(c.id)]||{};
   lines.push('CH '+String(c.id).padStart(2,'0')+' '+c.name+' | connected='+c.connected+' PWM='+c.output+' angle='+c.angle+
-   ' armed='+c.armed+' | pulses='+c.min_us+'-'+c.max_us+'us | physical span='+c.physical_span+' | gamepad range='+c.map_min+'-'+c.map_max+' | speed='+c.speed+' deg/step'
+   ' armed='+c.armed+' | pulses='+c.min_us+'-'+c.max_us+'us | physical span='+c.physical_span+' | gamepad range='+c.map_min+'-'+c.map_max+' | speed='+c.speed+' deg/step'+
    ' | negative='+bindingLabel(b.negative)+' ['+(inputActive(b.negative)?'ACTIVE':'idle')+']'+
    ' | positive='+bindingLabel(b.positive)+' ['+(inputActive(b.positive)?'ACTIVE':'idle')+']');
  }
