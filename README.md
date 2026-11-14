@@ -67,3 +67,7 @@ The pulse endpoints affect the PCA9685 output and are bounded to the existing co
 **Test procedure:** disconnect any overheated/damaged servo, check 5V and common ground, connect only one known-good unloaded SG90 to the intended output, test the controller axis readings while disarmed, then cautiously test a small servo movement. Stop immediately at abnormal heat, buzzing, or binding.
 
 This is an open-loop driver. PWM release after 0.6 seconds is not a power disconnect; it cannot determine position, stall, temperature, or protect against incorrect wiring. A hardware supply cutoff is recommended. **Do not use automatic movement unattended.**
+
+## Copyable diagnostics (V3.1)
+
+The Input Devices panel includes **COPY DIAGNOSTIC LOG**, a selectable read-only text box, **FREEZE / REFRESH SNAPSHOT**, and **CLEAR EVENTS**. The report contains detected controller IDs, live axis and button values, binding states for all channels, pulse settings, controller arm/mode state, and up to 80 recent browser control actions/errors. Copy captures an up-to-date snapshot. If Firefox disallows clipboard access, select the text and use Ctrl+C. This is a browser-side diagnostic snapshot, **not** a persistent Python traceback log; startup failures remain in `servos-launch.log`.
