@@ -26,8 +26,8 @@ input[type=range]{width:100%;accent-color:var(--cyan);cursor:pointer}.actions{di
 .bind-row .clear{flex:0 0 auto;width:32px;text-align:center}
 #devices{margin:9px 0 0;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
 #capture{font-size:12px;color:var(--gold);margin:6px 0}
-#live{white-space:pre-wrap;font:12px ui-monospace,monospace;color:var(--cyan);background:#0b141c;padding:10px;border-radius:8px;margin:10px 0;max-height:220px;overflow:auto}
-.cal{border-top:1px solid var(--line);padding-top:12px;margin-top:12px}
+#live{width:100%;resize:vertical;border:1px solid var(--line);outline:none;white-space:pre-wrap;font:12px ui-monospace,monospace;color:var(--cyan);background:#0b141c;padding:10px;border-radius:8px;margin:10px 0;max-height:220px;overflow:auto}
+.log-actions{display:flex;gap:8px;flex-wrap:wrap;margin:9px 0}.log-actions button{font-size:12px}.cal{border-top:1px solid var(--line);padding-top:12px;margin-top:12px}
 .cal-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .cal-row label{font-size:11px;color:var(--muted)}
 .cal-row input{width:100%;min-width:0;margin-top:4px;border:1px solid var(--line);background:#0c151e;color:var(--ink);border-radius:7px;padding:7px;font:13px system-ui}
@@ -46,7 +46,8 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 <div class="notice">SG90 V3: live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input stays within 60–120°; PWM releases after 0.6 seconds idle. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
 <h2>Input devices <span class="meta">/ Keyboard + browser Gamepad API (including compatible USB controllers)</span></h2>
 <div class="card"><div id="devices">Detecting controllers…</div><div id="capture">Click a binding, then press a key, gamepad button, or move an axis. Escape cancels.</div>
-<div id="live">No controller inputs yet</div>
+<div class="log-actions"><button id="copylog" type="button" class="primary">COPY DIAGNOSTIC LOG</button><button id="snapshot" type="button">FREEZE / REFRESH SNAPSHOT</button><button id="clearlog" type="button">CLEAR EVENTS</button><span id="copy-status" class="status" role="status"></span></div>
+<textarea id="live" readonly rows="12" spellcheck="false" aria-label="Copyable controller diagnostics log">No controller inputs yet</textarea>
 <div class="status">Input diagnostics are read-only and work while DISARMED. Axis neutral should be near 0.00. Avoid holding a stick while capturing a binding. Firefox must have focus for keyboard input. Gamepads must be recognized by Firefox. Arbitrary USB serial/HID device IDs require a separate Linux adapter. Input motion requires ARM.</div></div>
 <h2>Servo Control <span class="meta">/ Six active, ten reserved</span></h2><div class="grid" id="servos"></div>
 <h2>Motor Expansion <span class="meta">/ Future drivers, not wired</span></h2><div class="grid" id="motors"></div>
@@ -54,7 +55,53 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 </main><div role="alert" id="toast"></div>
 <script>
 let state=null, busy=false, capture=null, keys=new Set(), armedAt=0;
-let lastDiagnostics=0;
+let lastDiagnostics=0, freezeLog=false;
+const events=[];
+function logEvent(label,details=''){
+ const when=new Date().toLocaleTimeString();
+ events.push('['+when+'] '+label+(details?' | '+details:''));
+ if(events.length>80)events.shift();
+}
+function diagnosticReport(){
+ const lines=['BLOOMCORE SERVOS - DIAGNOSTICS',new Date().toISOString(),
+   'MODE: '+(state?.mode||'UNKNOWN')+' | ARMED: '+(state?.armed??'UNKNOWN'),
+   'PAGE: '+location.pathname,'','GAMEPADS:'];
+ const ps=pads();
+ if(!ps.length)lines.push('No gamepads detected');
+ ps.forEach(p=>{
+  lines.push('Gamepad '+p.index+': '+p.id+' | mapping='+p.mapping+' | connected='+p.connected);
+  lines.push('Axes: '+p.axes.map((v,i)=>i+'='+v.toFixed(3)).join(' '));
+  lines.push('Pressed: '+(p.buttons.map((b,i)=>b.pressed?i:null).filter(x=>x!==null).join(', ')||'none'));
+ });
+ lines.push('','CHANNELS:');
+ for(const c of state?.servos||[]){
+  const b=state.bindings?.[String(c.id)]||{};
+  lines.push('CH '+String(c.id).padStart(2,'0')+' '+c.name+' | connected='+c.connected+' PWM='+c.output+' angle='+c.angle+
+   ' | pulses='+c.min_us+'-'+c.max_us+'us | physical span='+c.physical_span+
+   ' | negative='+bindingLabel(b.negative)+' ['+(inputActive(b.negative)?'ACTIVE':'idle')+']'+
+   ' | positive='+bindingLabel(b.positive)+' ['+(inputActive(b.positive)?'ACTIVE':'idle')+']');
+ }
+ lines.push('','RECENT EVENTS:',...(events.length?events:['No events captured']));
+ return lines.join('\n');
+}
+function refreshDiagnosticReport(force=false){
+ if(!freezeLog||force)$('#live').value=diagnosticReport();
+}
+async function copyDiagnosticReport(){
+ refreshDiagnosticReport(true);
+ const content=$('#live').value;
+ try {
+  await navigator.clipboard.writeText(content);
+  $('#copy-status').textContent='Copied '+content.length+' characters';
+ } catch(e) {
+  const area=$('#live');area.focus();area.select();
+  try{
+   if(!document.execCommand('copy'))throw Error('Copy denied');
+   $('#copy-status').textContent='Copied (fallback)';
+  }catch(err){$('#copy-status').textContent='Select the log and press Ctrl+C';}
+ }
+}
+
 const axisReady=new Set();let lastInputTime=0;
 const bindingLabel=b=>!b?'NOT ASSIGNED':b.type==='keyboard'?b.code:(b.type==='gamepad_button'?'BTN ':'AXIS ')+b.index+(b.type==='gamepad_axis'?(b.direction<0?' −':' +'):'')+' / '+b.device_id.slice(0,24);
 function pads(){return Array.from(navigator.getGamepads?navigator.getGamepads():[]).filter(Boolean)}
@@ -88,7 +135,7 @@ function pollDevices(){
      if(b)lines.push('CH '+String(c.id).padStart(2,'0')+' mapped: − '+(inputActive(b.negative)?'ACTIVE':'idle')+' / + '+(inputActive(b.positive)?'ACTIVE':'idle'));
     }
   }
-  $('#live').textContent=lines.join('\\n\\n')||'No gamepad visible. Press any controller button to activate it in Firefox.';
+  refreshDiagnosticReport();
  }
  $('#devices').textContent=ps.length?ps.map(p=>'Device '+p.index+': '+p.id+' ('+p.buttons.length+' buttons, '+p.axes.length+' axes)').join(' | '):'No gamepads detected. Keyboard is available. Press a controller button to activate Gamepad API.';
  if(capture){
@@ -98,7 +145,7 @@ function pollDevices(){
   }
  }
 }
-async function finishCapture(b){const c=capture;if(!c)return;capture=null;$('#capture').textContent='Binding captured: '+bindingLabel(b);
+async function finishCapture(b){const c=capture;if(!c)return;capture=null;$('#capture').textContent='Binding captured: '+bindingLabel(b);logEvent('Binding captured','CH '+c.channel+' '+c.direction+' = '+bindingLabel(b));
  await request('binding',{channel:c.channel,direction:c.direction,binding:b})}
 window.addEventListener('keydown',e=>{
  if(capture){e.preventDefault();if(e.code==='Escape'){capture=null;$('#capture').textContent='Capture cancelled'}else finishCapture({type:'keyboard',code:e.code});return}
@@ -124,10 +171,10 @@ setInterval(async()=>{
 },50);
 const $=s=>document.querySelector(s);
 function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n}
-function error(message){const t=$('#toast');t.textContent=message;t.style.display='block';setTimeout(()=>{if(t.textContent===message)t.style.display='none'},5000)}
+function error(message){logEvent('ERROR',message);refreshDiagnosticReport();const t=$('#toast');t.textContent=message;t.style.display='block';setTimeout(()=>{if(t.textContent===message)t.style.display='none'},5000)}
 async function request(action,extra={}){
  if(busy)return;busy=true;
- try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...extra})});const data=await r.json();if(!r.ok)throw Error(data.error||'Request failed');state=data;render()}
+ try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...extra})});const data=await r.json();if(!r.ok)throw Error(data.error||'Request failed');state=data;logEvent('Control action',action+' '+JSON.stringify(extra));render()}
  catch(e){error(e.message)}finally{busy=false}
 }
 function render(){
@@ -183,7 +230,10 @@ function render(){
  c.append(top,el('div','number','MOTOR '+String(m.id+1).padStart(2,'0')),el('div','status','Driver, direction and speed controls coming later'));
  motors.append(c)}
 }
+$('#copylog').onclick=copyDiagnosticReport;
+$('#snapshot').onclick=()=>{freezeLog=!freezeLog;$('#snapshot').textContent=freezeLog?'RESUME LIVE REPORT':'FREEZE / REFRESH SNAPSHOT';refreshDiagnosticReport(true)};
+$('#clearlog').onclick=()=>{events.length=0;refreshDiagnosticReport(true);$('#copy-status').textContent='Events cleared'};
 $('#arm').onclick=async()=>{keys.clear();axisReady.clear();await request('arm')};$('#release').onclick=()=>request('release_all');$('#stop').onclick=()=>{keys.clear();axisReady.clear();request('stop')};
-fetch('/api/state').then(r=>{if(!r.ok)throw Error('Server unavailable');return r.json()}).then(s=>{state=s;render()}).catch(e=>error(e.message));
+fetch('/api/state').then(r=>{if(!r.ok)throw Error('Server unavailable');return r.json()}).then(s=>{state=s;logEvent('Dashboard connected',s.mode);render();refreshDiagnosticReport(true)}).catch(e=>error(e.message));
 </script>
 </body></html>
