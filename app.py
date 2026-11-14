@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+APP_VERSION = '3.1.1'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
@@ -118,7 +119,7 @@ class Controller:
 
     def state(self):
         with self.lock:
-            return dict(mode="HARDWARE" if self.driver else "SIMULATION",
+            return dict(version=APP_VERSION, mode="HARDWARE" if self.driver else "SIMULATION",
                         armed=self.armed, bindings=self.bindings, servos=[dict(x) for x in self.channels],
                         motors=[dict(id=i, name=f"Motor {i+1:02d}", status="RESERVED")
                                 for i in range(MOTORS)])
