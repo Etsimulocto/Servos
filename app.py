@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-APP_VERSION = '3.7.1'
+APP_VERSION = '3.8.0'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
@@ -91,7 +91,7 @@ class Controller:
         self.channels = [
             dict(id=i, name=f"Servo {i+1:02d}", connected=(i < 6),
                  angle=90, min_angle=0, max_angle=180,
-                 min_us=1000, max_us=2000, physical_span=90, map_min=60, map_max=120, speed=4, armed=False, output=False)
+                 min_us=1000, center_us=1500, max_us=2000, physical_span=90, map_min=60, map_max=120, speed=4, armed=False, output=False)
             for i in range(CHANNELS)
         ]
         self.bindings = {str(i): {"negative": None, "positive": None} for i in range(CHANNELS)}
@@ -128,8 +128,12 @@ class Controller:
                     if (type(lo) is int and type(hi) is int and
                         500 <= lo <= 1600 and 1500 <= hi <= 3500 and
                         lo < hi and type(span) is int and 30 <= span <= 180):
-                        servo["min_us"], servo["max_us"] = lo, hi
-                        servo["physical_span"] = span
+                        center = cal.get("center_us")
+                        if type(center) is not int:
+                            center = round((lo + hi) / 2)  # migrate old two-point calibration
+                        if lo < center < hi:
+                            servo["min_us"], servo["center_us"], servo["max_us"] = lo, center, hi
+                            servo["physical_span"] = span
                 mapped = data.get("mapped_limits", {}).get(str(i), {})
                 if isinstance(mapped, dict):
                     mn, mx = mapped.get("min"), mapped.get("max")
@@ -168,19 +172,26 @@ class Controller:
                 "speeds": {str(s["id"]): s["speed"] for s in self.channels},
                 "mapped_limits": {str(s["id"]): {"min": s["map_min"], "max": s["map_max"]} for s in self.channels},
                 "calibration": {str(s["id"]): {
-                    "min_us": s["min_us"], "max_us": s["max_us"],
+                    "min_us": s["min_us"], "center_us": s["center_us"], "max_us": s["max_us"],
                     "physical_span": s["physical_span"]} for s in self.channels}}
         temp = CONFIG.with_suffix(".json.tmp")
         temp.write_text(json.dumps(data, indent=2) + "\n")
         os.replace(temp, CONFIG)
 
+    @staticmethod
+    def pulse_for_angle(servo, angle):
+        lo, center, hi = servo["min_us"], servo["center_us"], servo["max_us"]
+        if angle <= 90:
+            pulse = lo + (angle / 90) * (center - lo)
+        else:
+            pulse = center + ((angle - 90) / 90) * (hi - center)
+        return max(lo, min(hi, round(pulse)))
+
     def state(self):
         with self.lock:
             prescale, nominal = PCA9685.timing(self.pwm_frequency_hz, self.oscillator_hz)
             def signal(servo):
-                requested = round(servo["min_us"] + (servo["angle"] / self.angle_divisor) *
-                                  (servo["max_us"] - servo["min_us"]))
-                requested = max(servo["min_us"], min(servo["max_us"], requested))
+                requested = self.pulse_for_angle(servo, servo["angle"])
                 ticks = max(1, min(4095, round(requested * 4096 * nominal / 1000000)))
                 return dict(servo, pulse_us=requested, pwm_ticks=ticks,
                             nominal_pulse_us=round(ticks * 1000000 / (4096 * nominal), 2))
@@ -193,7 +204,7 @@ class Controller:
                             prescale=prescale,
                             oscillator_hz=self.oscillator_hz,
                             oscillator_measured=False, resolution=4096,
-                            angle_divisor=self.angle_divisor,
+                            angle_divisor=self.angle_divisor, angle_divisor_deprecated=True,
                             watchdog_ms=round(self.watchdog_seconds * 1000)),
                 servos=[signal(x) for x in self.channels],
                 motors=[dict(id=i, name=f"Motor {i+1:02d}", status="RESERVED")
@@ -272,16 +283,17 @@ class Controller:
                     if servo["armed"]:
                         raise ValueError("Disarm this channel before changing calibration")
                     lo = payload.get("min_us")
+                    center = payload.get("center_us")
                     hi = payload.get("max_us")
                     span = payload.get("physical_span")
-                    if not (type(lo) is int and type(hi) is int and type(span) is int
+                    if not (type(lo) is int and type(center) is int and type(hi) is int and type(span) is int
                             and 500 <= lo <= 1600 and 1500 <= hi <= 3500
-                            and lo < hi and 30 <= span <= 180):
-                        raise ValueError("Allowed calibration: min 500–1600 µs, max 1500–3500 µs; wider values risk stalls and damage")
+                            and lo < center < hi and 30 <= span <= 180):
+                        raise ValueError("Calibration: MIN 500–1600 µs, MAX 1500–3500 µs, and MIN < CENTER < MAX")
                     # Never alter PWM while calibrating. The user must arm and move deliberately afterward.
                     if hi > 2500 and payload.get("extended_confirmed") is not True:
                         raise ValueError("Extended pulses above 2500 µs require explicit confirmation")
-                    servo["min_us"], servo["max_us"], servo["physical_span"] = lo, hi, span
+                    servo["min_us"], servo["center_us"], servo["max_us"], servo["physical_span"] = lo, center, hi, span
                     self._save_config()
                 elif op == "mapped_limits":
                     if servo["armed"]:
@@ -316,10 +328,7 @@ class Controller:
                         raise ValueError("Mapped input exceeds this channel\u0027s configured limits")
                     if not servo["min_angle"] <= angle <= servo["max_angle"]:
                         raise ValueError("Outside configured limits")
-                    us = round(servo["min_us"] + (angle / self.angle_divisor) *
-                               (servo["max_us"] - servo["min_us"]))
-                    # Divisor below 180 must never exceed the saved channel PWM limits.
-                    us = max(servo["min_us"], min(servo["max_us"], us))
+                    us = self.pulse_for_angle(servo, angle)
                     if self.driver:
                         self.driver.set_us(idx, us)
                     servo["angle"] = round(angle)
