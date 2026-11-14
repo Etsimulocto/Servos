@@ -54,8 +54,8 @@ function inputActive(b){
  if(!b)return false;
  if(b.type==='keyboard')return keys.has(b.code);
  for(const p of pads()){
-  if(p.id!==b.device_id)return false;
-  if(b.type==='gamepad_button')return !!p.buttons[b.index]&&p.buttons[b.index].pressed;
+  if(p.id!==b.device_id)continue;
+  if(b.type==='gamepad_button'){const id=p.id+':button:'+b.index;const pressed=!!p.buttons[b.index]&&p.buttons[b.index].pressed;if(!pressed){axisReady.add(id);return false}return axisReady.has(id)}
   if(b.type==='gamepad_axis'){
    const id=p.id+':'+b.index+':'+b.direction, v=p.axes[b.index]||0;
    if(Math.abs(v)<.20){axisReady.add(id);return false}
@@ -94,7 +94,7 @@ setInterval(async()=>{
   const b=state.bindings[String(s.id)];
   if(!b)continue;
   const delta=(inputActive(b.positive)?1:0)-(inputActive(b.negative)?1:0);
-  if(delta){chosen={channel:s.id,angle:Math.max(s.min_angle,Math.min(s.max_angle,s.angle+delta*2))};break}
+  if(delta){const next=Math.max(s.min_angle,Math.min(s.max_angle,s.angle+delta*2));if(next!==s.angle)chosen={channel:s.id,angle:next};break}
  }
  if(chosen){lastInputTime=Date.now();await request('angle',chosen)}
 },50);
