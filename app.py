@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-APP_VERSION = '3.7.0'
+APP_VERSION = '3.7.1'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
@@ -180,6 +180,7 @@ class Controller:
             def signal(servo):
                 requested = round(servo["min_us"] + (servo["angle"] / self.angle_divisor) *
                                   (servo["max_us"] - servo["min_us"]))
+                requested = max(servo["min_us"], min(servo["max_us"], requested))
                 ticks = max(1, min(4095, round(requested * 4096 * nominal / 1000000)))
                 return dict(servo, pulse_us=requested, pwm_ticks=ticks,
                             nominal_pulse_us=round(ticks * 1000000 / (4096 * nominal), 2))
@@ -317,6 +318,8 @@ class Controller:
                         raise ValueError("Outside configured limits")
                     us = round(servo["min_us"] + (angle / self.angle_divisor) *
                                (servo["max_us"] - servo["min_us"]))
+                    # Divisor below 180 must never exceed the saved channel PWM limits.
+                    us = max(servo["min_us"], min(servo["max_us"], us))
                     if self.driver:
                         self.driver.set_us(idx, us)
                     servo["angle"] = round(angle)
