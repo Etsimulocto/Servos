@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-APP_VERSION = '3.4.2'
+APP_VERSION = '3.4.3'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
@@ -151,7 +151,7 @@ class Controller:
                 self.release_all()
             elif op == "release_all":
                 self.release_all()
-            elif op in ("angle", "release", "rename", "binding", "calibration", "mapped_limits", "arm_channel", "disarm_channel"):
+            elif op in ("angle", "release", "rename", "binding", "calibration", "mapped_limits", "arm_channel", "disarm_channel", "speed"):
                 idx = payload.get("channel")
                 if type(idx) is not int or not (0 <= idx < CHANNELS):
                     raise ValueError("Invalid servo channel")
