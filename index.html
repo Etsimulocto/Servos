@@ -18,6 +18,14 @@ h2{font-size:15px;text-transform:uppercase;letter-spacing:.17em;color:#b6d3d2;ma
 .name{background:transparent;border:0;border-bottom:1px solid transparent;color:var(--ink);font:600 16px system-ui;width:100%;padding:7px 0;outline:none}
 .name:focus{border-color:var(--cyan)}.status{color:var(--muted);font-size:11px}.number{font-size:34px;font-weight:700;font-variant-numeric:tabular-nums;margin:8px 0 4px}.number small{font-size:14px;color:var(--muted)}
 input[type=range]{width:100%;accent-color:var(--cyan);cursor:pointer}.actions{display:flex;gap:8px;margin-top:12px}.actions button{flex:1;padding:8px}.reserved{opacity:.58}.reserved .number{font-size:24px}
+.mapper{border-top:1px solid var(--line);padding-top:11px;margin-top:12px}
+.mapper-title{font-size:11px;letter-spacing:.11em;color:var(--gold);margin-bottom:8px}
+.bind-row{display:flex;align-items:center;gap:6px;margin-top:6px}
+.bind-row>span{width:42px;font-size:12px;color:var(--muted)}
+.bind-row button{flex:1;text-align:left;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:8px;min-width:0}
+.bind-row .clear{flex:0 0 auto;width:32px;text-align:center}
+#devices{margin:9px 0 0;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+#capture{font-size:12px;color:var(--gold);margin:6px 0}
 footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px;background:#202a2c;border-left:3px solid var(--gold);font-size:13px;color:#dce2cf;border-radius:4px}
 #toast{position:fixed;right:16px;bottom:16px;background:#4c202b;color:white;padding:12px 16px;border-radius:10px;display:none;max-width:350px}
 </style>
@@ -30,12 +38,67 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 <button id="arm" class="primary">ARM</button><button id="release">RELEASE ALL</button><button id="stop" class="danger">STOP / DISARM</button></div>
 </header>
 <div class="notice">Default: simulated controls. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
+<h2>Input devices <span class="meta">/ Keyboard + browser Gamepad API (including compatible USB controllers)</span></h2>
+<div class="card"><div id="devices">Detecting controllers…</div><div id="capture">Click a binding, then press a key, gamepad button, or move an axis. Escape cancels.</div>
+<div class="status">Firefox must have focus for keyboard input. Gamepads must be recognized by Firefox. Arbitrary USB serial/HID device IDs require a separate Linux adapter. Input motion requires ARM.</div></div>
 <h2>Servo Control <span class="meta">/ Six active, ten reserved</span></h2><div class="grid" id="servos"></div>
 <h2>Motor Expansion <span class="meta">/ Future drivers, not wired</span></h2><div class="grid" id="motors"></div>
 <footer>Local Pi dashboard • 50 Hz output • Default 1000–2000 µs • No automatic movement on startup</footer>
 </main><div role="alert" id="toast"></div>
 <script>
-let state=null, busy=false;const $=s=>document.querySelector(s);
+let state=null, busy=false, capture=null, keys=new Set(), armedAt=0;
+const axisReady=new Set();let lastInputTime=0;
+const bindingLabel=b=>!b?'NOT ASSIGNED':b.type==='keyboard'?b.code:(b.type==='gamepad_button'?'BTN ':'AXIS ')+b.index+(b.type==='gamepad_axis'?(b.direction<0?' −':' +'):'')+' / '+b.device_id.slice(0,24);
+function pads(){return Array.from(navigator.getGamepads?navigator.getGamepads():[]).filter(Boolean)}
+function inputActive(b){
+ if(!b)return false;
+ if(b.type==='keyboard')return keys.has(b.code);
+ for(const p of pads()){
+  if(p.id!==b.device_id)return false;
+  if(b.type==='gamepad_button')return !!p.buttons[b.index]&&p.buttons[b.index].pressed;
+  if(b.type==='gamepad_axis'){
+   const id=p.id+':'+b.index+':'+b.direction, v=p.axes[b.index]||0;
+   if(Math.abs(v)<.20){axisReady.add(id);return false}
+   return axisReady.has(id)&&v*b.direction>.55
+  }
+ }
+ return false
+}
+function pollDevices(){
+ const ps=pads();
+ $('#devices').textContent=ps.length?ps.map(p=>'Device '+p.index+': '+p.id+' ('+p.buttons.length+' buttons, '+p.axes.length+' axes)').join(' | '):'No gamepads detected. Keyboard is available. Press a controller button to activate Gamepad API.';
+ if(capture){
+  for(const p of ps){
+   for(let i=0;i<p.buttons.length;i++)if(p.buttons[i].pressed){finishCapture({type:'gamepad_button',device_id:p.id,index:i});return}
+   for(let i=0;i<p.axes.length;i++){let v=p.axes[i];if(Math.abs(v)>.7){finishCapture({type:'gamepad_axis',device_id:p.id,index:i,direction:v<0?-1:1});return}}
+  }
+ }
+}
+async function finishCapture(b){const c=capture;if(!c)return;capture=null;$('#capture').textContent='Binding captured: '+bindingLabel(b);
+ await request('binding',{channel:c.channel,direction:c.direction,binding:b})}
+window.addEventListener('keydown',e=>{
+ if(capture){e.preventDefault();if(e.code==='Escape'){capture=null;$('#capture').textContent='Capture cancelled'}else finishCapture({type:'keyboard',code:e.code});return}
+ if(e.target.closest('input,textarea,select'))return;
+ keys.add(e.code);
+ if(state?.armed && state.bindings && Object.values(state.bindings).some(m=>Object.values(m).some(b=>b?.type==='keyboard'&&b.code===e.code)))e.preventDefault()
+});
+window.addEventListener('keyup',e=>keys.delete(e.code));
+window.addEventListener('blur',()=>{keys.clear();axisReady.clear()});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){keys.clear();axisReady.clear()}});
+setInterval(async()=>{
+ pollDevices();
+ if(!state?.armed||document.hidden||capture||busy||Date.now()-lastInputTime<125)return;
+ let chosen=null;
+ for(const s of state.servos){
+  if(!s.connected)continue;
+  const b=state.bindings[String(s.id)];
+  if(!b)continue;
+  const delta=(inputActive(b.positive)?1:0)-(inputActive(b.negative)?1:0);
+  if(delta){chosen={channel:s.id,angle:Math.max(s.min_angle,Math.min(s.max_angle,s.angle+delta*2))};break}
+ }
+ if(chosen){lastInputTime=Date.now();await request('angle',chosen)}
+},50);
+const $=s=>document.querySelector(s);
 function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n}
 function error(message){const t=$('#toast');t.textContent=message;t.style.display='block';setTimeout(()=>{if(t.textContent===message)t.style.display='none'},5000)}
 async function request(action,extra={}){
@@ -61,7 +124,18 @@ function render(){
   center.disabled=!state.armed||!s.connected;release.disabled=!s.connected;
   center.addEventListener('click',()=>request('angle',{channel:s.id,angle:90}));
   release.addEventListener('click',()=>request('release',{channel:s.id}));
-  actions.append(center,release);card.append(top,name,number,range,actions);root.append(card)
+  actions.append(center,release);
+  const mapper=el('div','mapper'),mt=el('div','mapper-title','INPUT MAPPING');
+  mapper.append(mt);
+  for(const direction of ['negative','positive']){
+   const wrap=el('div','bind-row'),label=el('span','',direction==='negative'?'− LEFT':'＋ RIGHT');
+   const bind=state.bindings?.[String(s.id)]?.[direction];
+   const captureButton=el('button','',bindingLabel(bind));captureButton.title=bind?.device_id||'Capture input';
+   captureButton.addEventListener('click',()=>{capture={channel:s.id,direction};axisReady.clear();$('#capture').textContent='Listening for '+s.name+' / '+direction+'… press a keyboard key, gamepad button, or move a stick. Escape cancels.'});
+   const clear=el('button','clear','×');clear.title='Clear binding';clear.onclick=()=>request('binding',{channel:s.id,direction,binding:null});
+   wrap.append(label,captureButton,clear);mapper.append(wrap)
+  }
+  card.append(top,name,number,range,actions,mapper);root.append(card)
  }
  const motors=$('#motors');motors.replaceChildren();
  for(const m of state.motors){const c=el('article','card reserved');const top=el('div','top');
@@ -69,7 +143,7 @@ function render(){
  c.append(top,el('div','number','MOTOR '+String(m.id+1).padStart(2,'0')),el('div','status','Driver, direction and speed controls coming later'));
  motors.append(c)}
 }
-$('#arm').onclick=()=>request('arm');$('#release').onclick=()=>request('release_all');$('#stop').onclick=()=>request('stop');
+$('#arm').onclick=async()=>{keys.clear();axisReady.clear();await request('arm')};$('#release').onclick=()=>request('release_all');$('#stop').onclick=()=>{keys.clear();axisReady.clear();request('stop')};
 fetch('/api/state').then(r=>{if(!r.ok)throw Error('Server unavailable');return r.json()}).then(s=>{state=s;render()}).catch(e=>error(e.message));
 </script>
 </body></html>
