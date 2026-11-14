@@ -43,7 +43,7 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 <div class="toolbar"><span class="badge" id="mode">CONNECTING</span><span class="badge" id="armed">DISARMED</span>
 <button id="arm" class="primary">ARM ALL</button><button id="release">RELEASE ALL</button><button id="stop" class="danger">STOP / DISARM</button></div>
 </header>
-<div class="notice">SG90 V3.4: individual ARM / DISARM and gamepad speed per channel, live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input defaults to 60–120° and has adjustable per-channel limits; PWM releases after 0.6 seconds idle. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
+<div class="notice">SG90 V3.5: individual ARM / DISARM and gamepad speed per channel, live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input defaults to 60–120° and has adjustable per-channel limits; PWM releases after 0.6 seconds idle. Extended pulses beyond 1000–2000 µs may permanently damage some servos; calibration cannot override mechanical limits. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
 <h2>Input devices <span class="meta">/ Keyboard + browser Gamepad API (including compatible USB controllers)</span></h2>
 <div class="card"><div id="devices">Detecting controllers…</div><div id="capture">DISARM ALL channels first. Click a binding, release controls, then move the desired stick or press a button. Escape cancels.</div>
 <div class="log-actions"><button id="copylog" type="button" class="primary">COPY DIAGNOSTIC LOG</button><button id="snapshot" type="button">FREEZE / REFRESH SNAPSHOT</button><button id="clearlog" type="button">CLEAR EVENTS</button><span id="copy-status" class="status" role="status"></span></div>
@@ -236,14 +236,21 @@ function render(){
     input.type='number';input.min=min;input.max=max;input.step=1;input.value=value;
     input.disabled=s.armed;wrap.append(input);fields.append(wrap);return input;
   }
-  const minPulse=field('Min µs',s.min_us,1000,1500);
-  const maxPulse=field('Max µs',s.max_us,1500,2000);
+  const minPulse=field('Min µs',s.min_us,500,1500);
+  const maxPulse=field('Max µs',s.max_us,1500,2500);
   const spanField=field('Measured travel °',s.physical_span,30,180);
   const save=el('button','','SAVE CALIBRATION');save.disabled=s.armed;
-  save.onclick=()=>request('calibration',{channel:s.id,min_us:Number(minPulse.value),max_us:Number(maxPulse.value),physical_span:Number(spanField.value)});
+  save.onclick=()=>{
+    const lo=Number(minPulse.value),hi=Number(maxPulse.value);
+    if(!Number.isInteger(lo)||!Number.isInteger(hi)||lo<500||hi>2500||lo>=1500||hi<=1500||lo>=hi){
+      error('Calibration must be 500–1500 µs minimum, 1500–2500 µs maximum, and straddle 1500 µs');return;
+    }
+    if((lo<1000||hi>2000)&&!window.confirm('EXTENDED PWM RANGE: SG90 servos can stall, buzz, overheat or break at their mechanical stops. Test with no load, in small steps, and keep power disconnect accessible. Save '+lo+'–'+hi+' µs for CH '+String(s.id).padStart(2,'0')+'?'))return;
+    request('calibration',{channel:s.id,min_us:lo,max_us:hi,physical_span:Number(spanField.value)});
+  };
   const approx=(s.angle/180-.5)*s.physical_span;
   const display=el('div','status','Estimated physical position: '+(approx>=0?'+':'')+approx.toFixed(1)+'° relative to center (entered travel: '+s.physical_span+'°). This is an estimate, not a position sensor.');
-  cal.append(fields,save,display);
+  cal.append(fields,save,display,el('div','status','Extend carefully: first try 900–2100 µs, then 800–2200 µs only if cool, quiet and moving freely. Never force an endpoint. Actual travel depends on the servo model.'));
   const mappingLimits=el('div','cal');
   mappingLimits.append(el('div','mapper-title','GAMEPAD TRAVEL LIMITS (DEFAULT 60–120°)'));
   const mapFields=el('div','cal-row');
