@@ -85,3 +85,9 @@ PWM release does **not** physically disconnect servo power. Power off before rew
 ## V3.4 — Adjustable input movement speed
 
 Each servo has a **GAMEPAD MOVEMENT SPEED** slider, saved per channel to `servo-mappings.json`. Step size is 1–8 dashboard degrees per 125ms, defaulting to 4 (previously fixed at 2). The speed applies to mapped gamepad and keyboard input, not manual slider jumps. The default corresponds to at most 32 commanded degrees/second; physical rotation depends on servo calibration, load, and the browser/network round-trip. Settings can only be edited when that channel is disarmed. Travel limits and idle PWM release remain in effect. Increase cautiously and stop at buzzing, heat or binding.
+
+## V3.5 — Extended pulse calibration for physical travel
+
+The min/max pulse width calibration is now 500–1500 µs for minimum and 1500–2500 µs for maximum, with the **existing 1000–2000 µs default unchanged**. The server validates and saves both settings only when that servo channel is DISARMED. When either endpoint extends beyond the default range, the UI requires explicit confirmation. The pulse mapping remains linear between the selected endpoints; editing `Measured travel °` changes only a displayed estimate.
+
+**Do not assume an SG90 can travel 180°**: variants differ, and mechanical stops can be closer than the commanded range. Start at 900–2100 µs if the servo moves freely over 1000–2000 µs, and only increase farther in small increments while watching for buzzing, heating, binding or current spikes. Unload the servo arm for calibration and disconnect external servo power immediately if it stalls. Never set 500–2500 µs blindly. PWM watchdog releases the signal after 0.6s inactivity but cannot cut supply power or detect stalls. If you need continuous 360° spinning rather than positional travel, a continuous-rotation servo is a different hardware class.
