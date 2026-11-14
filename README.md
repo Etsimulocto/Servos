@@ -71,3 +71,7 @@ This is an open-loop driver. PWM release after 0.6 seconds is not a power discon
 ## Copyable diagnostics (V3.1)
 
 The Input Devices panel includes **COPY DIAGNOSTIC LOG**, a selectable read-only text box, **FREEZE / REFRESH SNAPSHOT**, and **CLEAR EVENTS**. The report contains detected controller IDs, live axis and button values, binding states for all channels, pulse settings, controller arm/mode state, and up to 80 recent browser control actions/errors. Copy captures an up-to-date snapshot. If Firefox disallows clipboard access, select the text and use Ctrl+C. This is a browser-side diagnostic snapshot, **not** a persistent Python traceback log; startup failures remain in `servos-launch.log`.
+
+## Adjustable gamepad travel (V3.2)
+
+Each servo has independent **Gamepad min °** and **Gamepad max °** fields. Defaults stay 60–120 for caution, but the user may widen the commanded angle range (minimum 0–89; maximum 91–180) while DISARMED. Click **SAVE GAMEPAD LIMITS**; values persist in `servo-mappings.json` and are enforced by both the browser and server. Increase the range in small increments and observe the physical servo: 0–180 dashboard degrees do **not** necessarily correspond to 180 physical degrees. Nothing in the interface measures stalls, voltage, current, or temperature. Never use a servo that has overheated or is unresponsive.
