@@ -41,11 +41,11 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 <header>
 <div><div class="sub">QUARTERBITGAMES / PI CONTROL SYSTEM</div><h1><span>◉</span> SERVOS</h1><div class="sub">PCA9685 • 16 SERVO CHANNELS • 8 MOTOR BAYS</div></div>
 <div class="toolbar"><span class="badge" id="mode">CONNECTING</span><span class="badge" id="armed">DISARMED</span>
-<button id="arm" class="primary">ARM</button><button id="release">RELEASE ALL</button><button id="stop" class="danger">STOP / DISARM</button></div>
+<button id="arm" class="primary">ARM ALL</button><button id="release">RELEASE ALL</button><button id="stop" class="danger">STOP / DISARM</button></div>
 </header>
-<div class="notice">SG90 V3: live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input defaults to 60–120° and has adjustable per-channel limits; PWM releases after 0.6 seconds idle. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
+<div class="notice">SG90 V3.3: individual ARM / DISARM per channel, live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input defaults to 60–120° and has adjustable per-channel limits; PWM releases after 0.6 seconds idle. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
 <h2>Input devices <span class="meta">/ Keyboard + browser Gamepad API (including compatible USB controllers)</span></h2>
-<div class="card"><div id="devices">Detecting controllers…</div><div id="capture">DISARM first. Click a binding, release controls, then move the desired stick or press a button. Escape cancels.</div>
+<div class="card"><div id="devices">Detecting controllers…</div><div id="capture">DISARM ALL channels first. Click a binding, release controls, then move the desired stick or press a button. Escape cancels.</div>
 <div class="log-actions"><button id="copylog" type="button" class="primary">COPY DIAGNOSTIC LOG</button><button id="snapshot" type="button">FREEZE / REFRESH SNAPSHOT</button><button id="clearlog" type="button">CLEAR EVENTS</button><span id="copy-status" class="status" role="status"></span></div>
 <textarea id="live" readonly rows="12" spellcheck="false" aria-label="Copyable controller diagnostics log">No controller inputs yet</textarea>
 <div class="status">Input diagnostics are read-only and work while DISARMED. Axis neutral should be near 0.00. Avoid holding a stick while capturing a binding. Firefox must have focus for keyboard input. Gamepads must be recognized by Firefox. Arbitrary USB serial/HID device IDs require a separate Linux adapter. Input motion requires ARM.</div></div>
@@ -77,7 +77,7 @@ function diagnosticReport(){
  for(const c of state?.servos||[]){
   const b=state.bindings?.[String(c.id)]||{};
   lines.push('CH '+String(c.id).padStart(2,'0')+' '+c.name+' | connected='+c.connected+' PWM='+c.output+' angle='+c.angle+
-   ' | pulses='+c.min_us+'-'+c.max_us+'us | physical span='+c.physical_span+' | gamepad range='+c.map_min+'-'+c.map_max+
+   ' armed='+c.armed+' | pulses='+c.min_us+'-'+c.max_us+'us | physical span='+c.physical_span+' | gamepad range='+c.map_min+'-'+c.map_max+
    ' | negative='+bindingLabel(b.negative)+' ['+(inputActive(b.negative)?'ACTIVE':'idle')+']'+
    ' | positive='+bindingLabel(b.positive)+' ['+(inputActive(b.positive)?'ACTIVE':'idle')+']');
  }
@@ -186,7 +186,7 @@ setInterval(async()=>{
  if(!state?.armed||document.hidden||capture||busy||Date.now()-lastInputTime<125)return;
  let chosen=null;
  for(const s of state.servos){
-  if(!s.connected)continue;
+  if(!s.connected||!s.armed)continue;
   const b=state.bindings[String(s.id)];
   if(!b)continue;
   const delta=(inputActive(b.positive)?1:0)-(inputActive(b.negative)?1:0);
@@ -209,17 +209,24 @@ function render(){
  const root=$('#servos');root.replaceChildren();
  for(const s of state.servos){
   const card=el('article','card '+(s.connected?'connected':'reserved'));const top=el('div','top');
-  top.append(el('span','channel','CH '+String(s.id).padStart(2,'0')),el('span','status',s.connected?(s.output?'PWM ACTIVE':'CONNECTED / RELEASED'):'RESERVED'));
+  top.append(el('span','channel','CH '+String(s.id).padStart(2,'0')),el('span','status',s.connected?(s.armed?(s.output?'ARMED / PWM ACTIVE':'ARMED / IDLE'):'DISARMED'):'RESERVED'));
   const name=el('input','name');name.value=s.name;name.maxLength=32;name.setAttribute('aria-label','Servo '+(s.id+1)+' name');
   name.addEventListener('change',()=>request('rename',{channel:s.id,name:name.value}));
   const number=el('div','number',String(s.angle)+'°');const range=el('input');range.type='range';range.min=0;range.max=180;range.step=1;range.value=s.angle;
-  range.disabled=!state.armed||!s.connected;range.setAttribute('aria-label',s.name+' angle');
+  range.disabled=!s.armed||!s.connected;range.setAttribute('aria-label',s.name+' angle');
   range.addEventListener('input',()=>number.textContent=range.value+'°');
   range.addEventListener('change',()=>request('angle',{channel:s.id,angle:Number(range.value)}));
   const actions=el('div','actions'),center=el('button','','CENTER 90°'),release=el('button','','RELEASE');
-  center.disabled=!state.armed||!s.connected;release.disabled=!s.connected;
+  center.disabled=!s.armed||!s.connected;release.disabled=!s.connected;
   center.addEventListener('click',()=>request('angle',{channel:s.id,angle:90}));
   release.addEventListener('click',()=>request('release',{channel:s.id}));
+  const armButton=el('button',s.armed?'danger':'primary',s.armed?'DISARM CH':'ARM CH');
+  armButton.disabled=!s.connected;
+  armButton.addEventListener('click',()=>{
+    keys.clear();axisReady.clear();
+    request(s.armed?'disarm_channel':'arm_channel',{channel:s.id});
+  });
+  const armRow=el('div','actions');armRow.append(armButton);
   actions.append(center,release);
   const cal=el('div','cal');
   cal.append(el('div','mapper-title','SG90 CALIBRATION (POWER OFF TO CHANGE WIRING)'));
@@ -227,12 +234,12 @@ function render(){
   function field(label,value,min,max){
     const wrap=el('label','',label),input=el('input');
     input.type='number';input.min=min;input.max=max;input.step=1;input.value=value;
-    input.disabled=state.armed;wrap.append(input);fields.append(wrap);return input;
+    input.disabled=s.armed;wrap.append(input);fields.append(wrap);return input;
   }
   const minPulse=field('Min µs',s.min_us,1000,1500);
   const maxPulse=field('Max µs',s.max_us,1500,2000);
   const spanField=field('Measured travel °',s.physical_span,30,180);
-  const save=el('button','','SAVE CALIBRATION');save.disabled=state.armed;
+  const save=el('button','','SAVE CALIBRATION');save.disabled=s.armed;
   save.onclick=()=>request('calibration',{channel:s.id,min_us:Number(minPulse.value),max_us:Number(maxPulse.value),physical_span:Number(spanField.value)});
   const approx=(s.angle/180-.5)*s.physical_span;
   const display=el('div','status','Estimated physical position: '+(approx>=0?'+':'')+approx.toFixed(1)+'° relative to center (entered travel: '+s.physical_span+'°). This is an estimate, not a position sensor.');
@@ -243,12 +250,12 @@ function render(){
   function limitInput(label,value,min,max){
     const wrap=el('label','',label),input=el('input');
     input.type='number';input.min=min;input.max=max;input.step=1;input.value=value;
-    input.disabled=state.armed;wrap.append(input);mapFields.append(wrap);return input;
+    input.disabled=s.armed;wrap.append(input);mapFields.append(wrap);return input;
   }
   const minMap=limitInput('Gamepad min °',s.map_min,0,89);
   const maxMap=limitInput('Gamepad max °',s.map_max,91,180);
   const apply=el('button','','SAVE GAMEPAD LIMITS');
-  apply.disabled=state.armed;
+  apply.disabled=s.armed;
   apply.onclick=()=>request('mapped_limits',{channel:s.id,minimum:Number(minMap.value),maximum:Number(maxMap.value)});
   mappingLimits.append(mapFields,apply,el('div','status','Change while DISARMED. Increase gradually; these are command limits, not physical feedback.'));
 
@@ -262,7 +269,7 @@ function render(){
    const clear=el('button','clear','×');clear.title='Clear binding';clear.onclick=()=>request('binding',{channel:s.id,direction,binding:null});
    wrap.append(label,captureButton,clear);mapper.append(wrap)
   }
-  card.append(top,name,number,range,actions,cal,mappingLimits,mapper);root.append(card)
+  card.append(top,armRow,name,number,range,actions,cal,mappingLimits,mapper);root.append(card)
  }
  const motors=$('#motors');motors.replaceChildren();
  for(const m of state.motors){const c=el('article','card reserved');const top=el('div','top');
