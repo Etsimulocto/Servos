@@ -276,21 +276,21 @@ function render(){
     input.disabled=s.armed;wrap.append(input);fields.append(wrap);return input;
   }
   const minPulse=field('Min µs',s.min_us,500,1500);
-  const maxPulse=field('Max µs',s.max_us,1500,2800);
+  const maxPulse=field('Max µs',s.max_us,1500,3500);
   const spanField=field('Measured travel °',s.physical_span,30,180);
   const save=el('button','','SAVE CALIBRATION');save.disabled=s.armed;
   save.onclick=()=>{
     const lo=Number(minPulse.value),hi=Number(maxPulse.value);
-    if(!Number.isInteger(lo)||!Number.isInteger(hi)||lo<500||hi>2800||lo>=1500||hi<=1500||lo>=hi){
-      error('Calibration must be 500–1500 µs minimum, 1500–2800 µs maximum, and straddle 1500 µs');return;
+    if(!Number.isInteger(lo)||!Number.isInteger(hi)||lo<500||hi>3500||lo>=1500||hi<=1500||lo>=hi){
+      error('Calibration must be 500–1500 µs minimum, 1500–3500 µs maximum, and straddle 1500 µs');return;
     }
     if((lo<1000||hi>2000)&&!window.confirm('EXTENDED PWM RANGE: SG90 servos can stall, buzz, overheat or break at their mechanical stops. Test with no load, in small steps, and keep power disconnect accessible. Save '+lo+'–'+hi+' µs for CH '+String(s.id).padStart(2,'0')+'?'))return;
-    if(hi>2500&&!window.confirm('HIGH-RISK TEST: '+hi+' µs is beyond the usual SG90 control range. Increase only 50 µs at a time from the last tested endpoint; stop if motion stops increasing, or if buzzing, binding, or heating occurs. Continue?'))return;
+    if(hi>2500&&!window.confirm('HIGH-RISK TEST: '+hi+' µs is beyond typical SG90 specifications. At 2500 µs you already observed nearly 90 degrees. Going farther risks stalling or damaging the servo. Increase no more than 50 µs between checks; STOP immediately for buzzing, binding, or heat. Proceed?'))return;
     request('calibration',{channel:s.id,min_us:lo,max_us:hi,physical_span:Number(spanField.value),extended_confirmed:hi>2500});
   };
   const approx=(s.angle/180-.5)*s.physical_span;
   const display=el('div','status','Estimated physical position: '+(approx>=0?'+':'')+approx.toFixed(1)+'° relative to center (entered travel: '+s.physical_span+'°). This is an estimate, not a position sensor.');
-  cal.append(fields,save,display,el('div','status','Beyond 2500 µs: diagnostic-only extension up to 2800 µs, in 50 µs increments. Stop if motion no longer increases, servo buzzes or warms. Do not force an endpoint.'));
+  cal.append(fields,save,display,el('div','status','Beyond 2500 µs: HIGH-RISK diagnostic-only extension up to 3500 µs, in 50 µs increments. Stop if motion no longer increases, servo buzzes or warms. Do not force an endpoint.'));
   const mappingLimits=el('div','cal');
   mappingLimits.append(el('div','mapper-title','GAMEPAD TRAVEL LIMITS (DEFAULT 60–120°)'));
   const mapFields=el('div','cal-row');
