@@ -42,3 +42,13 @@ Browser: **http://127.0.0.1:8765**. Ensure wiring and power are safe *before* la
 ## Architecture / expansion
 
 `app.py` is the standard-library HTTP server and smbus2 PCA9685 adapter. `index.html` is the responsive, no-build frontend. The server deliberately binds only to localhost; do not expose an unauthenticated motor controller to the public network. Angles and names reset when the process restarts. Future phases: editable per-servo calibrations and connected-channel settings, movement interpolation, saveable poses, motor-driver selection and mappings, speed/forward/reverse/brake per motor, and hardwired E-stop.
+
+## Input mapper (V2)
+
+Each servo card has **negative / positive** input slots. Click a slot and press any keyboard key, gamepad button, or move a gamepad axis. Controller IDs are read from the browser Gamepad API; multiple controllers are supported when they have distinct IDs. Click × to unbind. Mappings and renamed channels are stored locally in `servo-mappings.json` and survive restarts; that file is excluded from git.
+
+Keyboard: the browser window must have focus. Gamepads: press a button so Firefox recognizes the controller. Holding an assigned key or gamepad direction steps the channel by **2° at most every 125 ms**, within its configured range. Button and axis controls require returning to released/neutral after arming before movement; STOP/DISARM releases PWM. Do not use this interface for load-bearing or safety-critical motion.
+
+**External devices:** Browser-recognized USB/Bluetooth gamepads display their device ID automatically and can be assigned. Generic USB serial devices, MIDI, custom HID, and Raspberry Pi `/dev/input/event*` inputs not exposed to Firefox are **not yet implemented**; these require a Linux input adapter. Keyboard ID separation is not available through ordinary browser keyboard events.
+
+**Updating:** close running old app processes before `git pull` and relaunch the new code. Existing running processes continue to serve old HTML until restarted.
