@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-APP_VERSION = '3.4.3'
+APP_VERSION = '3.5.0'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
@@ -84,7 +84,7 @@ class Controller:
                 if isinstance(cal, dict):
                     lo, hi, span = cal.get("min_us"), cal.get("max_us"), cal.get("physical_span")
                     if (type(lo) is int and type(hi) is int and
-                        1000 <= lo <= 1500 and 1500 <= hi <= 2000 and
+                        500 <= lo <= 1500 and 1500 <= hi <= 2500 and
                         lo < hi and type(span) is int and 30 <= span <= 180):
                         servo["min_us"], servo["max_us"] = lo, hi
                         servo["physical_span"] = span
@@ -190,9 +190,10 @@ class Controller:
                     hi = payload.get("max_us")
                     span = payload.get("physical_span")
                     if not (type(lo) is int and type(hi) is int and type(span) is int
-                            and 1000 <= lo <= 1500 and 1500 <= hi <= 2000
+                            and 500 <= lo <= 1500 and 1500 <= hi <= 2500
                             and lo < hi and 30 <= span <= 180):
-                        raise ValueError("Safe range: min 1000–1500 µs, max 1500–2000 µs, estimated travel 30–180°")
+                        raise ValueError("Allowed calibration: min 500–1500 µs, max 1500–2500 µs; wider values risk stalls and damage")
+                    # Never alter PWM while calibrating. The user must arm and move deliberately afterward.
                     servo["min_us"], servo["max_us"], servo["physical_span"] = lo, hi, span
                     self._save_config()
                 elif op == "mapped_limits":
