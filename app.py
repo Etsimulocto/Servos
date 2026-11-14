@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-APP_VERSION = '3.2.0'
+APP_VERSION = '3.3.0'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
@@ -65,7 +65,7 @@ class Controller:
         self.channels = [
             dict(id=i, name=f"Servo {i+1:02d}", connected=(i < 6),
                  angle=90, min_angle=0, max_angle=180,
-                 min_us=1000, max_us=2000, physical_span=90, map_min=60, map_max=120, output=False)
+                 min_us=1000, max_us=2000, physical_span=90, map_min=60, map_max=120, armed=False, output=False)
             for i in range(CHANNELS)
         ]
         self.bindings = {str(i): {"negative": None, "positive": None} for i in range(CHANNELS)}
@@ -137,18 +137,35 @@ class Controller:
         with self.lock:
             if op == "arm":
                 # No movement on arming. A subsequent intentional servo command is required.
-                self.armed = True
+                for servo in self.channels:
+                    servo["armed"] = bool(servo["connected"])
+                self.armed = any(s["armed"] for s in self.channels)
             elif op in ("disarm", "stop"):
+                for servo in self.channels:
+                    servo["armed"] = False
                 self.armed = False
                 self.release_all()
             elif op == "release_all":
                 self.release_all()
-            elif op in ("angle", "release", "rename", "binding", "calibration", "mapped_limits"):
+            elif op in ("angle", "release", "rename", "binding", "calibration", "mapped_limits", "arm_channel", "disarm_channel"):
                 idx = payload.get("channel")
                 if type(idx) is not int or not (0 <= idx < CHANNELS):
                     raise ValueError("Invalid servo channel")
                 servo = self.channels[idx]
-                if op == "rename":
+                if op == "arm_channel":
+                    if not servo["connected"]:
+                        raise ValueError("Cannot arm a reserved channel")
+                    # Arming only grants permission; it never commands a position.
+                    servo["armed"] = True
+                    self.armed = True
+                elif op == "disarm_channel":
+                    # Release only this channel; others remain unchanged.
+                    if self.driver:
+                        self.driver.release(idx)
+                    servo["output"] = False
+                    servo["armed"] = False
+                    self.armed = any(s["armed"] for s in self.channels)
+                elif op == "rename":
                     name = payload.get("name")
                     if not isinstance(name, str) or not (1 <= len(name.strip()) <= 32):
                         raise ValueError("Name must be 1 to 32 characters")
@@ -163,8 +180,8 @@ class Controller:
                     self._save_config()
                 elif op == "calibration":
                     # Calibration changes are only permitted while disarmed.
-                    if self.armed:
-                        raise ValueError("Disarm before changing calibration")
+                    if servo["armed"]:
+                        raise ValueError("Disarm this channel before changing calibration")
                     lo = payload.get("min_us")
                     hi = payload.get("max_us")
                     span = payload.get("physical_span")
@@ -175,8 +192,8 @@ class Controller:
                     servo["min_us"], servo["max_us"], servo["physical_span"] = lo, hi, span
                     self._save_config()
                 elif op == "mapped_limits":
-                    if self.armed:
-                        raise ValueError("Disarm before editing gamepad limits")
+                    if servo["armed"]:
+                        raise ValueError("Disarm this channel before editing gamepad limits")
                     minimum, maximum = payload.get("minimum"), payload.get("maximum")
                     if not (type(minimum) is int and type(maximum) is int and
                             0 <= minimum < 90 < maximum <= 180):
@@ -188,8 +205,8 @@ class Controller:
                         self.driver.release(idx)
                     servo["output"] = False
                 else:
-                    if not self.armed:
-                        raise ValueError("Arm the controller first")
+                    if not servo["armed"]:
+                        raise ValueError("Arm this servo channel first")
                     if not servo["connected"]:
                         raise ValueError("Channel is reserved; not connected")
                     angle = payload.get("angle")
@@ -223,7 +240,8 @@ class Controller:
                                 self.driver.release(idx)
                             servo["output"] = False
                         except OSError:
-                            self.armed = False
+                            servo["armed"] = False
+                            self.armed = any(s["armed"] for s in self.channels)
 
     def release_all(self):
         for servo in self.channels:
@@ -276,6 +294,8 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(400, {"error": str(ex)})
         except OSError as ex:
             controller.armed = False
+            for servo in controller.channels:
+                servo["armed"] = False
             self._reply(503, {"error": f"I2C hardware error: {ex}"})
 
 def main():
@@ -302,6 +322,8 @@ def main():
         watcher.join(timeout=2)
         with controller.lock:
             controller.armed = False
+            for servo in controller.channels:
+                servo["armed"] = False
             controller.release_all()
             if controller.driver:
                 controller.driver.close()
