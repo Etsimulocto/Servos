@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-APP_VERSION = '3.9.0'
+APP_VERSION = '3.10.0'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
@@ -251,7 +251,7 @@ class Controller:
                 self.release_all()
             elif op == "release_all":
                 self.release_all()
-            elif op in ("angle", "release", "rename", "binding", "calibration", "mapped_limits", "arm_channel", "disarm_channel", "speed"):
+            elif op in ("angle", "release", "rename", "binding", "calibration", "copy_calibration", "mapped_limits", "arm_channel", "disarm_channel", "speed"):
                 idx = payload.get("channel")
                 if type(idx) is not int or not (0 <= idx < CHANNELS):
                     raise ValueError("Invalid servo channel")
@@ -298,6 +298,27 @@ class Controller:
                     if hi > 2500 and payload.get("extended_confirmed") is not True:
                         raise ValueError("Extended pulses above 2500 µs require explicit confirmation")
                     servo["min_us"], servo["center_us"], servo["max_us"], servo["physical_span"] = lo, center, hi, span
+                    self._save_config()
+                elif op == "copy_calibration":
+                    # Only duplicate pulse calibration, never bindings/gamepad limits.
+                    # Sender and receiver must both be disarmed; no movement on copy.
+                    source_idx = payload.get("source_channel")
+                    if type(source_idx) is not int or not (0 <= source_idx < CHANNELS):
+                        raise ValueError("Invalid source channel")
+                    source = self.channels[source_idx]
+                    if source_idx == idx:
+                        raise ValueError("Select a different source channel")
+                    if not source["connected"] or not servo["connected"]:
+                        raise ValueError("Both channels must be connected")
+                    if source["armed"] or servo["armed"]:
+                        raise ValueError("DISARM source and target before copying calibration")
+                    if payload.get("confirmed") is not True:
+                        raise ValueError("Copy calibration requires explicit confirmation")
+                    if source["min_us"] < 1000 or source["max_us"] > 2000:
+                        if payload.get("extended_confirmed") is not True:
+                            raise ValueError("Extended pulse copy requires additional confirmation")
+                    for key in ("min_us", "center_us", "max_us", "physical_span"):
+                        servo[key] = source[key]
                     self._save_config()
                 elif op == "mapped_limits":
                     if servo["armed"]:
