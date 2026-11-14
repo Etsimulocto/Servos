@@ -3,6 +3,7 @@
 import argparse
 import json
 import threading
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,6 +11,7 @@ from urllib.parse import urlsplit
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
+CONFIG = Path(__file__).with_name("servo-mappings.json")
 
 class PCA9685:
     def __init__(self, address=0x40, bus_number=1):
@@ -62,11 +64,48 @@ class Controller:
                  min_us=1000, max_us=2000, output=False)
             for i in range(CHANNELS)
         ]
+        self.bindings = {str(i): {"negative": None, "positive": None} for i in range(CHANNELS)}
+        self._load_config()
+
+    def _load_config(self):
+        if not CONFIG.exists():
+            return
+        try:
+            data = json.loads(CONFIG.read_text())
+            for i, servo in enumerate(self.channels):
+                name = data.get("names", {}).get(str(i))
+                if isinstance(name, str) and 1 <= len(name) <= 32:
+                    servo["name"] = name
+                for direction in ("negative", "positive"):
+                    binding = data.get("bindings", {}).get(str(i), {}).get(direction)
+                    if self._valid_binding(binding):
+                        self.bindings[str(i)][direction] = binding
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+    @staticmethod
+    def _valid_binding(b):
+        if b is None:
+            return True
+        if not isinstance(b, dict) or b.get("type") not in ("keyboard", "gamepad_button", "gamepad_axis"):
+            return False
+        if b["type"] == "keyboard":
+            return isinstance(b.get("code"), str) and 1 <= len(b["code"]) <= 40
+        return (isinstance(b.get("device_id"), str) and len(b["device_id"]) <= 256
+                and type(b.get("index")) is int and 0 <= b["index"] <= 127
+                and (b["type"] != "gamepad_axis" or b.get("direction") in (-1, 1)))
+
+    def _save_config(self):
+        data = {"names": {str(s["id"]): s["name"] for s in self.channels},
+                "bindings": self.bindings}
+        temp = CONFIG.with_suffix(".json.tmp")
+        temp.write_text(json.dumps(data, indent=2) + "\n")
+        os.replace(temp, CONFIG)
 
     def state(self):
         with self.lock:
             return dict(mode="HARDWARE" if self.driver else "SIMULATION",
-                        armed=self.armed, servos=[dict(x) for x in self.channels],
+                        armed=self.armed, bindings=self.bindings, servos=[dict(x) for x in self.channels],
                         motors=[dict(id=i, name=f"Motor {i+1:02d}", status="RESERVED")
                                 for i in range(MOTORS)])
 
@@ -83,7 +122,7 @@ class Controller:
                 self.release_all()
             elif op == "release_all":
                 self.release_all()
-            elif op in ("angle", "release", "rename"):
+            elif op in ("angle", "release", "rename", "binding"):
                 idx = payload.get("channel")
                 if type(idx) is not int or not (0 <= idx < CHANNELS):
                     raise ValueError("Invalid servo channel")
@@ -93,6 +132,14 @@ class Controller:
                     if not isinstance(name, str) or not (1 <= len(name.strip()) <= 32):
                         raise ValueError("Name must be 1 to 32 characters")
                     servo["name"] = name.strip()
+                    self._save_config()
+                elif op == "binding":
+                    direction = payload.get("direction")
+                    binding = payload.get("binding")
+                    if direction not in ("negative", "positive") or not self._valid_binding(binding):
+                        raise ValueError("Invalid input binding")
+                    self.bindings[str(idx)][direction] = binding
+                    self._save_config()
                 elif op == "release":
                     if self.driver:
                         self.driver.release(idx)
