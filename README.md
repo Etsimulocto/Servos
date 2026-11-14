@@ -117,3 +117,9 @@ Safety: global timing changes are rejected unless ALL channels are disarmed, and
 ## V3.8 three-point calibration
 
 Each servo independently saves MIN/CENTER/MAX microsecond pulse values. Dashboard 0°, 90°, 180° map exactly to MIN, CENTER, MAX, with two independent linear segments between them. CENTER is a user-set electrical reference and need not be 1500 µs or the arithmetic midpoint. Existing two-point settings migrate with CENTER=(MIN+MAX)/2 rounded, preserving their previous mapping. Values persist in servo-mappings.json. Calibration requires disarming the channel; prior extended pulse confirmations remain. Global legacy angle divisor remains visible but no longer affects the three-point mapping. The diagnostics now print MIN/CENTER/MAX. These settings cannot measure physical angle or override mechanical servo stops.
+
+## V3.9 — smooth mapped movement
+
+Mapped keyboard/gamepad control now uses a nominal **25 ms** update loop with fractional angle accumulation. Speed 1–8 sets **8–64 commanded degrees per second**, rather than 1–8° jumps every 125 ms. The per-channel optional acceleration/deceleration checkbox is enabled by default and saved as `ramps` with the speed; when the input is released the controller immediately stops sending new position commands (no coast). As a mapped limit is approached, ramp mode reduces the commanded rate. Full 16-channel UI rendering is throttled during motion, while displayed angles update on every acknowledged response. Browser-to-Pi HTTP round-trip can reduce actual update frequency. STOP, DISARM, and RELEASE are no longer rejected by the busy guard during an in-flight mapped command. Existing three-point MIN/CENTER/MAX PWM values and 50 Hz frequency are unchanged.
+
+This improves the *commands*, not the servo's inherent motor speed or precision. Start unloaded and avoid pushing an extended-range endpoint into a mechanical stop.
