@@ -275,14 +275,14 @@ function render(){
     input.type='number';input.min=min;input.max=max;input.step=1;input.value=value;
     input.disabled=s.armed;wrap.append(input);fields.append(wrap);return input;
   }
-  const minPulse=field('Min µs',s.min_us,500,1500);
+  const minPulse=field('Min µs',s.min_us,500,1600);
   const maxPulse=field('Max µs',s.max_us,1500,3500);
   const spanField=field('Measured travel °',s.physical_span,30,180);
   const save=el('button','','SAVE CALIBRATION');save.disabled=s.armed;
   save.onclick=()=>{
     const lo=Number(minPulse.value),hi=Number(maxPulse.value);
-    if(!Number.isInteger(lo)||!Number.isInteger(hi)||lo<500||hi>3500||lo>=1500||hi<=1500||lo>=hi){
-      error('Calibration must be 500–1500 µs minimum, 1500–3500 µs maximum, and straddle 1500 µs');return;
+    if(!Number.isInteger(lo)||!Number.isInteger(hi)||lo<500||hi>3500||lo>1600||hi<1500||lo>=hi){
+      error('Calibration must be 500–1600 µs minimum, 1500–3500 µs maximum, with minimum below maximum');return;
     }
     if((lo<1000||hi>2000)&&!window.confirm('EXTENDED PWM RANGE: SG90 servos can stall, buzz, overheat or break at their mechanical stops. Test with no load, in small steps, and keep power disconnect accessible. Save '+lo+'–'+hi+' µs for CH '+String(s.id).padStart(2,'0')+'?'))return;
     if(hi>2500&&!window.confirm('HIGH-RISK TEST: '+hi+' µs is beyond typical SG90 specifications. At 2500 µs you already observed nearly 90 degrees. Going farther risks stalling or damaging the servo. Increase no more than 50 µs between checks; STOP immediately for buzzing, binding, or heat. Proceed?'))return;
