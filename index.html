@@ -59,7 +59,7 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 <div class="toolbar"><span class="badge" id="mode">CONNECTING</span><span class="badge" id="armed">DISARMED</span>
 <button id="arm" class="primary">ARM ALL</button><button id="release">RELEASE ALL</button><button id="stop" class="danger">STOP / DISARM</button></div>
 </header>
-<div class="notice">SG90 V3.9: individual ARM / DISARM and gamepad speed per channel, live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input defaults to 60–120° and has adjustable per-channel limits; PWM releases after 0.6 seconds idle. Extended pulses beyond 1000–2000 µs may permanently damage some servos; calibration cannot override mechanical limits. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
+<div class="notice">SG90 V3.10: individual ARM / DISARM and gamepad speed per channel, live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input defaults to 60–120° and has adjustable per-channel limits; PWM releases after 0.6 seconds idle. Extended pulses beyond 1000–2000 µs may permanently damage some servos; calibration cannot override mechanical limits. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
 
 <h2>PWM Diagnostics &amp; Timing <span class="meta">/ PCA9685 · global settings for all channels</span></h2>
 <div class="card">
@@ -124,6 +124,7 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 <script>
 let state=null, busy=false, capture=null, keys=new Set(), armedAt=0;
 let requestSerial=0, renderedAt=0;
+let manualDragging=null;
 const motion=new Map();
 const MOTION_TICK_MS=25, SPEED_RATE=8, RAMP_ACCEL=200;
 let lastDiagnostics=0, freezeLog=false;
@@ -263,6 +264,7 @@ setInterval(()=>{
  const now=performance.now();
  for(const s of state.servos){
   if(!s.connected||!s.armed){motion.delete(s.id);continue}
+  if(manualDragging===s.id){motion.delete(s.id);continue}
   const b=state.bindings[String(s.id)];
   if(!b){motion.delete(s.id);continue}
   const dir=(inputActive(b.positive)?1:0)-(inputActive(b.negative)?1:0);
@@ -291,7 +293,7 @@ function renderMotionState(){
   const number=document.getElementById('servo-angle-'+s.id);
   const range=document.getElementById('servo-range-'+s.id);
   if(number)number.textContent=s.angle+'°';
-  if(range && document.activeElement!==range)range.value=s.angle;
+  if(range && manualDragging!==s.id)range.value=s.angle;
  }
  if(performance.now()-renderedAt>500){render();renderedAt=performance.now()}
 }
@@ -338,9 +340,12 @@ function render(){
   const name=el('input','name');name.value=s.name;name.maxLength=32;name.setAttribute('aria-label','Servo '+(s.id+1)+' name');
   name.addEventListener('change',()=>request('rename',{channel:s.id,name:name.value}));
   const number=el('div','number',String(s.angle)+'°');number.id='servo-angle-'+s.id;const range=el('input');range.id='servo-range-'+s.id;range.type='range';range.min=0;range.max=180;range.step=1;range.value=s.angle;
-  range.disabled=!s.armed||!s.connected;range.setAttribute('aria-label',s.name+' angle');
-  range.addEventListener('input',()=>number.textContent=range.value+'°');
-  range.addEventListener('change',()=>request('angle',{channel:s.id,angle:Number(range.value)}));
+  range.disabled=!s.armed||!s.connected;range.setAttribute('aria-label',s.name+' manual angle, independent of gamepad limits');
+  range.title='MANUAL 0–180° control; gamepad limits do not restrict this slider';
+  range.addEventListener('pointerdown',()=>{manualDragging=s.id;clearMotion()});
+  range.addEventListener('input',()=>{manualDragging=s.id;clearMotion();number.textContent=range.value+'°'});
+  range.addEventListener('change',()=>{const target=Number(range.value);manualDragging=null;clearMotion();request('angle',{channel:s.id,angle:target})});
+  range.addEventListener('blur',()=>{if(manualDragging===s.id)manualDragging=null});
   const actions=el('div','actions'),center=el('button','','CENTER 90°'),release=el('button','','RELEASE');
   center.disabled=!s.armed||!s.connected;release.disabled=!s.connected;
   center.addEventListener('click',()=>request('angle',{channel:s.id,angle:90}));
@@ -353,6 +358,7 @@ function render(){
   });
   const armRow=el('div','actions');armRow.append(armButton);
   actions.append(center,release);
+  const manualNote=el('div','status','MANUAL ANGLE 0–180°: full slider always available when armed; gamepad limits apply ONLY to mapped controller or keyboard movement.');
   const cal=el('div','cal');
   cal.append(el('div','mapper-title','SG90 CALIBRATION (POWER OFF TO CHANGE WIRING)'));
   const fields=el('div','cal-row');
@@ -378,6 +384,19 @@ function render(){
   const approx=(s.angle/180-.5)*s.physical_span;
   const display=el('div','status','Estimated physical position: '+(approx>=0?'+':'')+approx.toFixed(1)+'° relative to center (entered travel: '+s.physical_span+'°). This is an estimate, not a position sensor.');
   cal.append(fields,save,display,el('div','status','0° = MIN, 90° = CENTER, 180° = MAX. Each half interpolates separately. CENTER is independently adjustable; it is not necessarily 1500 µs. Beyond 2500 µs is HIGH-RISK; stop for reversal, binding or heat.'));
+  if(s.connected&&s.id!==0){
+    const copy=el('button','','COPY CH 00 PULSE CALIBRATION → CH '+String(s.id).padStart(2,'0'));
+    const source=state.servos[0];
+    copy.disabled=s.armed||source.armed;
+    copy.title='Copies only MIN/CENTER/MAX and measured travel; not gamepad limits, speed or bindings';
+    copy.onclick=()=>{
+      if(!window.confirm('Copy CH 00 pulse calibration ('+source.min_us+'/'+source.center_us+'/'+source.max_us+' µs) to CH '+String(s.id).padStart(2,'0')+'? Both servos must be DISARMED. This will replace the target pulse calibration ONLY. Individual servos may have different safe endpoints.'))return;
+      const extended=source.min_us<1000||source.max_us>2000;
+      if(extended&&!window.confirm('EXTENDED RANGE WARNING: CH 00 settings can stall or damage other SG90s. Do not move the copied servo to endpoints before individually verifying safe travel with no load. Copy anyway?'))return;
+      request('copy_calibration',{channel:s.id,source_channel:0,confirmed:true,extended_confirmed:extended});
+    };
+    cal.append(copy,el('div','status','Convenience copy only. Verify each servo’s safe travel separately before sweeping to endpoints.'));
+  }
   const mappingLimits=el('div','cal');
   mappingLimits.append(el('div','mapper-title','GAMEPAD TRAVEL LIMITS (DEFAULT 60–120°)'));
   const mapFields=el('div','cal-row');
@@ -391,7 +410,7 @@ function render(){
   const apply=el('button','','SAVE GAMEPAD LIMITS');
   apply.disabled=s.armed;
   apply.onclick=()=>request('mapped_limits',{channel:s.id,minimum:Number(minMap.value),maximum:Number(maxMap.value)});
-  mappingLimits.append(mapFields,apply,el('div','status','Change while DISARMED. Increase gradually; these are command limits, not physical feedback.'));
+  mappingLimits.append(mapFields,apply,el('div','status','GAMEPAD/KEYBOARD ONLY. These limits do not restrict the MANUAL angle slider. Change while DISARMED.'));
 
   const speedPanel=el('div','cal');
   speedPanel.append(el('div','mapper-title','GAMEPAD MOVEMENT SPEED'));
@@ -417,7 +436,7 @@ function render(){
    const clear=el('button','clear','×');clear.title='Clear binding';clear.onclick=()=>request('binding',{channel:s.id,direction,binding:null});
    wrap.append(label,captureButton,clear);mapper.append(wrap)
   }
-  card.append(top,armRow,name,number,range,actions,cal,mappingLimits,speedPanel,mapper)
+  card.append(top,armRow,name,number,range,manualNote,actions,cal,mappingLimits,speedPanel,mapper)
  }
  const motors=$('#motors');motors.replaceChildren();
  for(const m of state.motors){const c=el('article','card reserved');const top=el('div','top');
