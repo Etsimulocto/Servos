@@ -45,7 +45,7 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 </header>
 <div class="notice">SG90 V3: live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input stays within 60–120°; PWM releases after 0.6 seconds idle. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
 <h2>Input devices <span class="meta">/ Keyboard + browser Gamepad API (including compatible USB controllers)</span></h2>
-<div class="card"><div id="devices">Detecting controllers…</div><div id="capture">Click a binding, then press a key, gamepad button, or move an axis. Escape cancels.</div>
+<div class="card"><div id="devices">Detecting controllers…</div><div id="capture">DISARM first. Click a binding, release controls, then move the desired stick or press a button. Escape cancels.</div>
 <div class="log-actions"><button id="copylog" type="button" class="primary">COPY DIAGNOSTIC LOG</button><button id="snapshot" type="button">FREEZE / REFRESH SNAPSHOT</button><button id="clearlog" type="button">CLEAR EVENTS</button><span id="copy-status" class="status" role="status"></span></div>
 <textarea id="live" readonly rows="12" spellcheck="false" aria-label="Copyable controller diagnostics log">No controller inputs yet</textarea>
 <div class="status">Input diagnostics are read-only and work while DISARMED. Axis neutral should be near 0.00. Avoid holding a stick while capturing a binding. Firefox must have focus for keyboard input. Gamepads must be recognized by Firefox. Arbitrary USB serial/HID device IDs require a separate Linux adapter. Input motion requires ARM.</div></div>
@@ -105,6 +105,16 @@ async function copyDiagnosticReport(){
 const axisReady=new Set();let lastInputTime=0;
 const bindingLabel=b=>!b?'NOT ASSIGNED':b.type==='keyboard'?b.code:(b.type==='gamepad_button'?'BTN ':'AXIS ')+b.index+(b.type==='gamepad_axis'?(b.direction<0?' −':' +'):'')+' / '+b.device_id.slice(0,24);
 function pads(){return Array.from(navigator.getGamepads?navigator.getGamepads():[]).filter(Boolean)}
+// Standard Xbox 360 triggers sit at -1 at rest, not zero. Never treat a resting trigger as a stick push.
+function axisNeutral(p,i){return (p.id.includes('045e-028e') && (i===4||i===5))?-1:0}
+function captureStart(channel,direction){
+ if(state?.armed){error('Disarm before capturing an input');return}
+ const baseline={};
+ for(const p of pads())baseline[p.index]={id:p.id,axes:Array.from(p.axes),buttons:p.buttons.map(b=>b.pressed)};
+ capture={channel,direction,baseline,started:performance.now()};
+ $('#capture').textContent='Listening for CH '+channel+' / '+direction+' — release controls, then MOVE your intended stick or press a button. Escape cancels.';
+ logEvent('Input capture started','CH '+channel+' '+direction);
+}
 function inputActive(b){
  if(!b)return false;
  if(b.type==='keyboard')return keys.has(b.code);
@@ -112,9 +122,10 @@ function inputActive(b){
   if(p.id!==b.device_id)continue;
   if(b.type==='gamepad_button'){const id=p.id+':button:'+b.index;const pressed=!!p.buttons[b.index]&&p.buttons[b.index].pressed;if(!pressed){axisReady.add(id);return false}return axisReady.has(id)}
   if(b.type==='gamepad_axis'){
-   const id=p.id+':'+b.index+':'+b.direction, v=p.axes[b.index]||0;
-   if(Math.abs(v)<.20){axisReady.add(id);return false}
-   return axisReady.has(id)&&v*b.direction>.55
+   const id=p.id+':'+b.index+':'+b.direction, v=p.axes[b.index]??0, neutral=axisNeutral(p,b.index);
+   const offset=v-neutral;
+   if(Math.abs(offset)<.20){axisReady.add(id);return false}
+   return axisReady.has(id)&&offset*b.direction>.55
   }
  }
  return false
@@ -138,10 +149,24 @@ function pollDevices(){
   refreshDiagnosticReport();
  }
  $('#devices').textContent=ps.length?ps.map(p=>'Device '+p.index+': '+p.id+' ('+p.buttons.length+' buttons, '+p.axes.length+' axes)').join(' | '):'No gamepads detected. Keyboard is available. Press a controller button to activate Gamepad API.';
- if(capture){
+ if(capture && performance.now()-capture.started>150){
   for(const p of ps){
-   for(let i=0;i<p.buttons.length;i++)if(p.buttons[i].pressed){finishCapture({type:'gamepad_button',device_id:p.id,index:i});return}
-   for(let i=0;i<p.axes.length;i++){let v=p.axes[i];if(Math.abs(v)>.7){finishCapture({type:'gamepad_axis',device_id:p.id,index:i,direction:v<0?-1:1});return}}
+   const base=capture.baseline[p.index];
+   if(!base || base.id!==p.id)continue;
+   // Only a NEW button press, not one already held when capture started.
+   for(let i=0;i<p.buttons.length;i++){
+    if(p.buttons[i].pressed && !base.buttons[i]){
+     finishCapture({type:'gamepad_button',device_id:p.id,index:i});return;
+    }
+   }
+   for(let i=0;i<p.axes.length;i++){
+    const now=p.axes[i]??0, before=base.axes[i]??axisNeutral(p,i);
+    const movement=now-before;
+    // Require motion away from the original resting state, not an already-resting -1 trigger.
+    if(Math.abs(movement)>.65){
+     finishCapture({type:'gamepad_axis',device_id:p.id,index:i,direction:movement<0?-1:1});return;
+    }
+   }
   }
  }
 }
@@ -218,7 +243,7 @@ function render(){
    const wrap=el('div','bind-row'),label=el('span','',direction==='negative'?'− LEFT':'＋ RIGHT');
    const bind=state.bindings?.[String(s.id)]?.[direction];
    const captureButton=el('button','',bindingLabel(bind));captureButton.title=bind?.device_id||'Capture input';
-   captureButton.addEventListener('click',()=>{capture={channel:s.id,direction};axisReady.clear();$('#capture').textContent='Listening for '+s.name+' / '+direction+'… press a keyboard key, gamepad button, or move a stick. Escape cancels.'});
+   captureButton.addEventListener('click',()=>{captureStart(s.id,direction)});
    const clear=el('button','clear','×');clear.title='Clear binding';clear.onclick=()=>request('binding',{channel:s.id,direction,binding:null});
    wrap.append(label,captureButton,clear);mapper.append(wrap)
   }
