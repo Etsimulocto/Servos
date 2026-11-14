@@ -99,3 +99,7 @@ A **Manual rotation recorder** section includes opt-in camera preview, **RECORD*
 ### V3.6.1 diagnostic extension
 
 The maximum calibration pulse accepts up to 2800 µs for a sacrificial SG90 test only, explicitly confirmed above 2500 µs in the UI and required by the backend API (`extended_confirmed: true`). Existing settings stay unchanged. Increase by at most 50 µs between tests, with the servo unloaded and a quick external power disconnect available; stop if motion stops increasing, there is buzzing, mechanical binding or heat. This extension is outside normal SG90 specifications and may permanently damage a servo. Do not mistake 180° hand rotation for guaranteed powered travel.
+
+### V3.6.2 — Experimental ceiling 3500 µs
+
+Maximum pulse width can now be entered up to **3500 µs** while a channel is disarmed. Above 2500 µs the UI presents an explicit high-risk confirmation and the Python backend requires `extended_confirmed: true`. The default remains unchanged. This extension is for troubleshooting an expendable unit only: 3500 µs is outside typical SG90 specifications. At nearly 90° to one side already by 2500 µs, further pulses may push the servo into its mechanical stop. Use an unloaded horn, controlled incremental tests, and a physical external power disconnect; do not continue through buzzing, binding or heating. A full 180° travel does not require exceeding endpoints.
