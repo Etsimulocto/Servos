@@ -9,26 +9,46 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-APP_VERSION = '3.6.3'
+APP_VERSION = '3.7.0'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
 CONFIG = Path(__file__).with_name("servo-mappings.json")
 
 class PCA9685:
-    def __init__(self, address=0x40, bus_number=1):
+    # PCA9685 resolution and nominal internal clock, not a measurement.
+    RESOLUTION = 4096
+
+    @staticmethod
+    def timing(frequency_hz, oscillator_hz):
+        prescale = max(3, min(255, round(oscillator_hz / (4096 * frequency_hz) - 1)))
+        nominal_frequency = oscillator_hz / (4096 * (prescale + 1))
+        return prescale, nominal_frequency
+
+    def __init__(self, address=0x40, bus_number=1, frequency_hz=50, oscillator_hz=25000000):
         from smbus2 import SMBus
         import time
         self.bus = SMBus(bus_number)
         self.addr = address
         self.lock = threading.Lock()
+        self.oscillator_hz = oscillator_hz
+        self.prescale = 121
+        self.nominal_frequency_hz = 50.0
+        self.configure(frequency_hz, oscillator_hz)
+
+    def configure(self, frequency_hz, oscillator_hz):
+        # Called only at startup or while ALL channels are disarmed.
+        prescale, nominal = self.timing(frequency_hz, oscillator_hz)
         with self.lock:
-            self.bus.write_byte_data(address, 0x00, 0x10)  # sleep before prescale
-            self.bus.write_byte_data(address, 0xFE, 121)   # ~50 Hz at 25 MHz
-            self.bus.write_byte_data(address, 0x01, 0x04)  # output driver
+            self.bus.write_byte_data(self.addr, 0x00, 0x10)  # SLEEP
+            self.bus.write_byte_data(self.addr, 0xFE, prescale)
+            self.bus.write_byte_data(self.addr, 0x01, 0x04)
             for ch in range(CHANNELS):
-                self._off(ch)  # release every channel at startup
-            self.bus.write_byte_data(address, 0x00, 0x20)  # wake; auto-increment
+                self._off(ch)
+            self.bus.write_byte_data(self.addr, 0x00, 0x20)  # wake, auto increment
+            self.oscillator_hz = oscillator_hz
+            self.prescale = prescale
+            self.nominal_frequency_hz = nominal
         time.sleep(0.005)
 
     def _off(self, ch):
@@ -40,8 +60,10 @@ class PCA9685:
             self._off(ch)
 
     def set_us(self, ch, us):
-        # 20 ms cycle / 4096 steps, at configured ~50 Hz.
-        ticks = max(1, min(4095, round(us * 4096 / 20000)))
+        # Use the SAME prescaler-derived frequency as the PCA9685 configuration.
+        # Nominal pulse width, not measured hardware timing.
+        ticks = max(1, min(4095, round(us * self.RESOLUTION *
+                                     self.nominal_frequency_hz / 1000000)))
         base = 0x06 + 4 * ch
         with self.lock:
             self.bus.write_i2c_block_data(self.addr, base,
@@ -58,7 +80,11 @@ class PCA9685:
 class Controller:
     def __init__(self, hardware=False, address=0x40, bus=1):
         self.lock = threading.RLock()
-        self.driver = PCA9685(address, bus) if hardware else None
+        self.driver = None
+        self.pwm_frequency_hz = 50
+        self.oscillator_hz = 25000000  # assumed; hardware oscillator not measured
+        self.angle_divisor = 180
+        self.watchdog_seconds = 0.6
         self.armed = False
         self.last_command = [0.0] * CHANNELS
         self.shutdown = threading.Event()
@@ -70,12 +96,28 @@ class Controller:
         ]
         self.bindings = {str(i): {"negative": None, "positive": None} for i in range(CHANNELS)}
         self._load_config()
+        self.driver = (PCA9685(address, bus, self.pwm_frequency_hz, self.oscillator_hz)
+                       if hardware else None)
 
     def _load_config(self):
         if not CONFIG.exists():
             return
         try:
             data = json.loads(CONFIG.read_text())
+            timing = data.get("timing", {})
+            if isinstance(timing, dict):
+                freq = timing.get("frequency_hz")
+                clock = timing.get("oscillator_hz")
+                divisor = timing.get("angle_divisor")
+                watchdog_ms = timing.get("watchdog_ms")
+                if type(freq) is int and 40 <= freq <= 100:
+                    self.pwm_frequency_hz = freq
+                if type(clock) is int and 23000000 <= clock <= 27000000:
+                    self.oscillator_hz = clock
+                if type(divisor) is int and 90 <= divisor <= 360:
+                    self.angle_divisor = divisor
+                if type(watchdog_ms) is int and 200 <= watchdog_ms <= 3000:
+                    self.watchdog_seconds = watchdog_ms / 1000
             for i, servo in enumerate(self.channels):
                 name = data.get("names", {}).get(str(i))
                 if isinstance(name, str) and 1 <= len(name) <= 32:
@@ -116,7 +158,12 @@ class Controller:
                 and (b["type"] != "gamepad_axis" or b.get("direction") in (-1, 1)))
 
     def _save_config(self):
-        data = {"names": {str(s["id"]): s["name"] for s in self.channels},
+        data = {"timing": {
+                    "frequency_hz": self.pwm_frequency_hz,
+                    "oscillator_hz": self.oscillator_hz,
+                    "angle_divisor": self.angle_divisor,
+                    "watchdog_ms": round(self.watchdog_seconds * 1000)},
+                "names": {str(s["id"]): s["name"] for s in self.channels},
                 "bindings": self.bindings,
                 "speeds": {str(s["id"]): s["speed"] for s in self.channels},
                 "mapped_limits": {str(s["id"]): {"min": s["map_min"], "max": s["map_max"]} for s in self.channels},
@@ -129,17 +176,54 @@ class Controller:
 
     def state(self):
         with self.lock:
-            return dict(version=APP_VERSION, mode="HARDWARE" if self.driver else "SIMULATION",
-                        armed=self.armed, bindings=self.bindings, servos=[dict(x) for x in self.channels],
-                        motors=[dict(id=i, name=f"Motor {i+1:02d}", status="RESERVED")
-                                for i in range(MOTORS)])
+            prescale, nominal = PCA9685.timing(self.pwm_frequency_hz, self.oscillator_hz)
+            def signal(servo):
+                requested = round(servo["min_us"] + (servo["angle"] / self.angle_divisor) *
+                                  (servo["max_us"] - servo["min_us"]))
+                ticks = max(1, min(4095, round(requested * 4096 * nominal / 1000000)))
+                return dict(servo, pulse_us=requested, pwm_ticks=ticks,
+                            nominal_pulse_us=round(ticks * 1000000 / (4096 * nominal), 2))
+            return dict(
+                version=APP_VERSION, mode="HARDWARE" if self.driver else "SIMULATION",
+                armed=self.armed, bindings=self.bindings,
+                timing=dict(frequency_hz=self.pwm_frequency_hz,
+                            nominal_frequency_hz=round(nominal, 4),
+                            period_us=round(1000000 / nominal, 2),
+                            prescale=prescale,
+                            oscillator_hz=self.oscillator_hz,
+                            oscillator_measured=False, resolution=4096,
+                            angle_divisor=self.angle_divisor,
+                            watchdog_ms=round(self.watchdog_seconds * 1000)),
+                servos=[signal(x) for x in self.channels],
+                motors=[dict(id=i, name=f"Motor {i+1:02d}", status="RESERVED")
+                        for i in range(MOTORS)])
 
     def handle(self, payload):
         if not isinstance(payload, dict):
             raise ValueError("Expected an object")
         op = payload.get("action")
         with self.lock:
-            if op == "arm":
+            if op == "timing":
+                # Global PWM timing requires all channels disarmed. Never retime live PWM.
+                if any(s["armed"] for s in self.channels):
+                    raise ValueError("DISARM ALL channels before editing timing")
+                freq = payload.get("frequency_hz")
+                osc = payload.get("oscillator_hz")
+                divisor = payload.get("angle_divisor")
+                watchdog_ms = payload.get("watchdog_ms")
+                if not (type(freq) is int and 40 <= freq <= 100 and
+                        type(osc) is int and 23000000 <= osc <= 27000000 and
+                        type(divisor) is int and 90 <= divisor <= 360 and
+                        type(watchdog_ms) is int and 200 <= watchdog_ms <= 3000):
+                    raise ValueError("Timing limits: 40–100 Hz; clock 23–27 MHz; divisor 90–360; watchdog 200–3000 ms")
+                if self.driver and (freq != self.pwm_frequency_hz or osc != self.oscillator_hz):
+                    self.driver.configure(freq, osc)  # releases every output before retiming
+                self.pwm_frequency_hz = freq
+                self.oscillator_hz = osc
+                self.angle_divisor = divisor
+                self.watchdog_seconds = watchdog_ms / 1000
+                self._save_config()
+            elif op == "arm":
                 # No movement on arming. A subsequent intentional servo command is required.
                 for servo in self.channels:
                     servo["armed"] = bool(servo["connected"])
@@ -231,7 +315,7 @@ class Controller:
                         raise ValueError("Mapped input exceeds this channel\u0027s configured limits")
                     if not servo["min_angle"] <= angle <= servo["max_angle"]:
                         raise ValueError("Outside configured limits")
-                    us = round(servo["min_us"] + (angle / 180) *
+                    us = round(servo["min_us"] + (angle / self.angle_divisor) *
                                (servo["max_us"] - servo["min_us"]))
                     if self.driver:
                         self.driver.set_us(idx, us)
@@ -249,7 +333,7 @@ class Controller:
                 now = time.monotonic()
                 for servo in self.channels:
                     idx = servo["id"]
-                    if servo["output"] and now - self.last_command[idx] > 0.6:
+                    if servo["output"] and now - self.last_command[idx] > self.watchdog_seconds:
                         try:
                             if self.driver:
                                 self.driver.release(idx)
