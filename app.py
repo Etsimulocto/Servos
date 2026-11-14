@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-APP_VERSION = '3.1.1'
+APP_VERSION = '3.1.2'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
