@@ -42,6 +42,13 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 .recorder-controls button{font-size:12px}
 #recording-status{margin-top:10px;color:var(--gold);font-size:13px}
 #recording-marks{max-height:130px;overflow:auto;white-space:pre-wrap;font:12px ui-monospace,monospace;color:var(--muted);background:#0c151e;padding:8px;border-radius:8px}
+.timing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.timing-grid label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:12px}
+.timing-grid input{background:#0c151e;color:var(--ink);border:1px solid var(--line);border-radius:7px;padding:8px;width:100%}
+.timing-readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin:12px 0}
+.timing-readout>div{background:#0d1921;padding:10px;border-radius:8px}
+.timing-readout strong{display:block;font-size:17px;color:var(--cyan)}
+
 @media(max-width:700px){.recorder-layout{grid-template-columns:1fr}}
 </style>
 </head>
@@ -52,7 +59,29 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 <div class="toolbar"><span class="badge" id="mode">CONNECTING</span><span class="badge" id="armed">DISARMED</span>
 <button id="arm" class="primary">ARM ALL</button><button id="release">RELEASE ALL</button><button id="stop" class="danger">STOP / DISARM</button></div>
 </header>
-<div class="notice">SG90 V3.6.1: individual ARM / DISARM and gamepad speed per channel, live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input defaults to 60–120° and has adjustable per-channel limits; PWM releases after 0.6 seconds idle. Extended pulses beyond 1000–2000 µs may permanently damage some servos; calibration cannot override mechanical limits. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
+<div class="notice">SG90 V3.7: individual ARM / DISARM and gamepad speed per channel, live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input defaults to 60–120° and has adjustable per-channel limits; PWM releases after 0.6 seconds idle. Extended pulses beyond 1000–2000 µs may permanently damage some servos; calibration cannot override mechanical limits. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
+
+<h2>PWM Diagnostics &amp; Timing <span class="meta">/ PCA9685 · global settings for all channels</span></h2>
+<div class="card">
+  <div class="notice">PCA9685 is a 12-bit timer. Frequency and clock setting are used to compute a linked prescaler and pulse ticks. The oscillator value is an assumption, NOT a measurement. Changing timing affects every servo; DISARM ALL before saving. Do not confuse PWM Hz with US/UK mains power frequency.</div>
+  <div class="timing-readout">
+    <div><span class="status">Configured output frequency</span><strong id="pwm-actual">—</strong></div>
+    <div><span class="status">Calculated PWM period</span><strong id="pwm-period">—</strong></div>
+    <div><span class="status">Derived prescaler register</span><strong id="pwm-prescale">—</strong></div>
+    <div><span class="status">Hardware resolution (fixed)</span><strong id="pwm-resolution">4096 ticks</strong></div>
+  </div>
+  <div class="timing-grid">
+    <label>Frequency target (Hz) <input id="pwm-freq" type="number" min="40" max="100" step="1" value="50"></label>
+    <label>Assumed oscillator (Hz) <input id="pwm-clock" type="number" min="23000000" max="27000000" step="10000" value="25000000"></label>
+    <label>Angle divisor (dashboard mapping) <input id="pwm-divisor" type="number" min="90" max="360" step="1" value="180"></label>
+    <label>Watchdog timeout (ms) <input id="pwm-watchdog" type="number" min="200" max="3000" step="100" value="600"></label>
+  </div>
+  <div class="recorder-controls">
+    <button type="button" id="pwm-save" class="primary">SAVE PWM SETTINGS</button>
+    <button type="button" id="pwm-reset">RESET TO DEFAULTS</button>
+  </div>
+  <div class="status" id="pwm-help">Prescaler and period are calculated from frequency and oscillator and cannot be set independently. The 4096-tick resolution is fixed by hardware. Angle divisor changes how dashboard commands map to pulses; it does not measure actual shaft position.</div>
+</div>
 <h2>Input devices <span class="meta">/ Keyboard + browser Gamepad API (including compatible USB controllers)</span></h2>
 <div class="card"><div id="devices">Detecting controllers…</div><div id="capture">DISARM ALL channels first. Click a binding, release controls, then move the desired stick or press a button. Escape cancels.</div>
 <div class="log-actions"><button id="copylog" type="button" class="primary">COPY DIAGNOSTIC LOG</button><button id="snapshot" type="button">FREEZE / REFRESH SNAPSHOT</button><button id="clearlog" type="button">CLEAR EVENTS</button><span id="copy-status" class="status" role="status"></span></div>
@@ -104,7 +133,9 @@ function logEvent(label,details=''){
 function diagnosticReport(){
  const lines=['BLOOMCORE SERVOS - DIAGNOSTICS',new Date().toISOString(),
    'MODE: '+(state?.mode||'UNKNOWN')+' | ARMED: '+(state?.armed??'UNKNOWN'),
-   'PAGE: '+location.pathname,'','GAMEPADS:'];
+   'PAGE: '+location.pathname,
+   'PWM TIMING: '+(state?.timing?JSON.stringify(state.timing):'unavailable'),
+   '','GAMEPADS:'];
  const ps=pads();
  if(!ps.length)lines.push('No gamepads detected');
  ps.forEach(p=>{
@@ -117,6 +148,7 @@ function diagnosticReport(){
   const b=state.bindings?.[String(c.id)]||{};
   lines.push('CH '+String(c.id).padStart(2,'0')+' '+c.name+' | connected='+c.connected+' PWM='+c.output+' angle='+c.angle+
    ' armed='+c.armed+' | pulses='+c.min_us+'-'+c.max_us+'us | physical span='+c.physical_span+' | gamepad range='+c.map_min+'-'+c.map_max+' | speed='+c.speed+' deg/step'+
+   ' | commanded pulse='+c.pulse_us+'us | PWM ticks='+c.pwm_ticks+' | quantized pulse='+c.nominal_pulse_us+'us'+
    ' | negative='+bindingLabel(b.negative)+' ['+(inputActive(b.negative)?'ACTIVE':'idle')+']'+
    ' | positive='+bindingLabel(b.positive)+' ['+(inputActive(b.positive)?'ACTIVE':'idle')+']');
  }
@@ -241,7 +273,20 @@ async function request(action,extra={}){
  try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...extra})});const data=await r.json();if(!r.ok)throw Error(data.error||'Request failed');state=data;logEvent('Control action',action+' '+JSON.stringify(extra));render()}
  catch(e){error(e.message)}finally{busy=false}
 }
+function timingPanel(){
+ const t=state?.timing;if(!t)return;
+ $('#pwm-actual').textContent=t.nominal_frequency_hz.toFixed(3)+' Hz';
+ $('#pwm-period').textContent=t.period_us.toFixed(2)+' µs';
+ $('#pwm-prescale').textContent=String(t.prescale);
+ $('#pwm-resolution').textContent=t.resolution+' ticks';
+ // Do not erase a field while the user is editing it.
+ const fields=[['#pwm-freq',t.frequency_hz],['#pwm-clock',t.oscillator_hz],['#pwm-divisor',t.angle_divisor],['#pwm-watchdog',t.watchdog_ms]];
+ for(const [selector,value] of fields)if(document.activeElement!==$(selector))$(selector).value=value;
+ $('#pwm-save').disabled=state.armed;
+ $('#pwm-reset').disabled=state.armed;
+}
 function render(){
+ timingPanel();
  $('#mode').textContent=state.mode+' v'+state.version;$('#mode').className='badge '+(state.mode==='HARDWARE'?'good':'warn');
  $('#armed').textContent=state.armed?'ARMED':'DISARMED';$('#armed').className='badge '+(state.armed?'good':'warn');
  $('#arm').disabled=state.armed;
@@ -420,6 +465,28 @@ $('#marks-download').onclick=()=>{
 window.addEventListener('pagehide',()=>{if(cameraStream)for(const t of cameraStream.getTracks())t.stop()});
 recorderUI();
 
+$('#pwm-save').onclick=()=>{
+ if(state?.armed){error('Disarm all channels first');return}
+ const params={
+  frequency_hz:Number($('#pwm-freq').value),
+  oscillator_hz:Number($('#pwm-clock').value),
+  angle_divisor:Number($('#pwm-divisor').value),
+  watchdog_ms:Number($('#pwm-watchdog').value)
+ };
+ if(!(Number.isInteger(params.frequency_hz)&&params.frequency_hz>=40&&params.frequency_hz<=100&&
+      Number.isInteger(params.oscillator_hz)&&params.oscillator_hz>=23000000&&params.oscillator_hz<=27000000&&
+      Number.isInteger(params.angle_divisor)&&params.angle_divisor>=90&&params.angle_divisor<=360&&
+      Number.isInteger(params.watchdog_ms)&&params.watchdog_ms>=200&&params.watchdog_ms<=3000)){
+  error('Invalid PWM settings. Check frequency 40–100 Hz, oscillator 23–27 MHz, angle divisor 90–360, watchdog 200–3000 ms.');return;
+ }
+ if(!window.confirm('Apply GLOBAL PWM timing? This changes all 16 channels and may affect servo motion. Continue only while every channel is disarmed.'))return;
+ request('timing',params);
+};
+$('#pwm-reset').onclick=()=>{
+ if(state?.armed){error('Disarm all channels first');return}
+ if(!window.confirm('Restore GLOBAL PWM defaults: 50 Hz, 25 MHz assumed clock, divisor 180, watchdog 600 ms?'))return;
+ request('timing',{frequency_hz:50,oscillator_hz:25000000,angle_divisor:180,watchdog_ms:600});
+};
 $('#copylog').onclick=copyDiagnosticReport;
 $('#snapshot').onclick=()=>{freezeLog=!freezeLog;$('#snapshot').textContent=freezeLog?'RESUME LIVE REPORT':'FREEZE / REFRESH SNAPSHOT';refreshDiagnosticReport(true)};
 $('#clearlog').onclick=()=>{events.length=0;refreshDiagnosticReport(true);$('#copy-status').textContent='Events cleared'};
