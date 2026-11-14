@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-APP_VERSION = '3.8.0'
+APP_VERSION = '3.9.0'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
@@ -91,7 +91,7 @@ class Controller:
         self.channels = [
             dict(id=i, name=f"Servo {i+1:02d}", connected=(i < 6),
                  angle=90, min_angle=0, max_angle=180,
-                 min_us=1000, center_us=1500, max_us=2000, physical_span=90, map_min=60, map_max=120, speed=4, armed=False, output=False)
+                 min_us=1000, center_us=1500, max_us=2000, physical_span=90, map_min=60, map_max=120, speed=4, ramp=True, armed=False, output=False)
             for i in range(CHANNELS)
         ]
         self.bindings = {str(i): {"negative": None, "positive": None} for i in range(CHANNELS)}
@@ -142,6 +142,9 @@ class Controller:
                 saved_speed = data.get("speeds", {}).get(str(i))
                 if type(saved_speed) is int and 1 <= saved_speed <= 8:
                     servo["speed"] = saved_speed
+                saved_ramp = data.get("ramps", {}).get(str(i))
+                if type(saved_ramp) is bool:
+                    servo["ramp"] = saved_ramp
                 for direction in ("negative", "positive"):
                     binding = data.get("bindings", {}).get(str(i), {}).get(direction)
                     if self._valid_binding(binding):
@@ -170,6 +173,7 @@ class Controller:
                 "names": {str(s["id"]): s["name"] for s in self.channels},
                 "bindings": self.bindings,
                 "speeds": {str(s["id"]): s["speed"] for s in self.channels},
+                "ramps": {str(s["id"]): s["ramp"] for s in self.channels},
                 "mapped_limits": {str(s["id"]): {"min": s["map_min"], "max": s["map_max"]} for s in self.channels},
                 "calibration": {str(s["id"]): {
                     "min_us": s["min_us"], "center_us": s["center_us"], "max_us": s["max_us"],
@@ -308,9 +312,11 @@ class Controller:
                     if servo["armed"]:
                         raise ValueError("Disarm channel before setting movement speed")
                     speed = payload.get("speed")
-                    if type(speed) is not int or not 1 <= speed <= 8:
-                        raise ValueError("Speed must be between 1 and 8 degrees per step")
+                    ramp = payload.get("ramp", servo["ramp"])
+                    if type(speed) is not int or not 1 <= speed <= 8 or type(ramp) is not bool:
+                        raise ValueError("Speed must be 1–8; ramp must be true or false")
                     servo["speed"] = speed
+                    servo["ramp"] = ramp
                     self._save_config()
                 elif op == "release":
                     if self.driver:
