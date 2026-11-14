@@ -75,3 +75,9 @@ The Input Devices panel includes **COPY DIAGNOSTIC LOG**, a selectable read-only
 ## Adjustable gamepad travel (V3.2)
 
 Each servo has independent **Gamepad min °** and **Gamepad max °** fields. Defaults stay 60–120 for caution, but the user may widen the commanded angle range (minimum 0–89; maximum 91–180) while DISARMED. Click **SAVE GAMEPAD LIMITS**; values persist in `servo-mappings.json` and are enforced by both the browser and server. Increase the range in small increments and observe the physical servo: 0–180 dashboard degrees do **not** necessarily correspond to 180 physical degrees. Nothing in the interface measures stalls, voltage, current, or temperature. Never use a servo that has overheated or is unresponsive.
+
+## V3.3 — Per-channel ARM / DISARM
+
+Each of 16 servo cards shows a channel-specific **ARM CH** or **DISARM CH** button. Reserved channels cannot be armed. A channel starts disarmed, as do all channels when the server starts. Arming does **not** move the servo. Movement from slider, center, keyboard, or gamepad is allowed only for individually armed channels. **DISARM CH** releases that channel's PCA9685 PWM output, leaving other channels alone. Global **ARM ALL** arms only configured connected channels; global **STOP / DISARM** disarms all channels and releases all PWM outputs. **RELEASE ALL** releases PWM without changing which channels are armed. Per-channel arm state is intentionally not persisted; reboot always starts safe. Changes to calibration and mapped travel limits require the relevant channel to be disarmed. The diagnostic log includes arm state per channel.
+
+PWM release does **not** physically disconnect servo power. Power off before rewiring; do not use a damaged/overheated servo. To upgrade, stop all existing Servos processes, run `git pull origin main`, and launch the desktop icon again.
