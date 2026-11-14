@@ -13,6 +13,7 @@ import webbrowser
 
 ROOT = Path(__file__).resolve().parent
 LOG = ROOT / "servos-launch.log"
+VERSION = "3.1.1"
 
 def notify(message):
     print(message, file=sys.stderr)
@@ -48,7 +49,7 @@ def main():
     # Reuse an existing matching controller; never mistake a stale/foreign 404 for the app.
     for port in range(8765, 8786):
         existing = state_at(port)
-        if existing and existing.get("mode") == wanted:
+        if existing and existing.get("mode") == wanted and existing.get("version") == VERSION:
             webbrowser.open(f"http://127.0.0.1:{port}/")
             return
     port = next((p for p in range(8765, 8786) if port_free(p)), None)
@@ -67,7 +68,7 @@ def main():
     for _ in range(50):
         if proc.poll() is not None:
             return notify(f"Servos exited at startup. See log: {LOG}")
-        if state_at(port):
+        if (ready := state_at(port)) and ready.get("version") == VERSION:
             webbrowser.open(f"http://127.0.0.1:{port}/")
             return
         time.sleep(0.1)
