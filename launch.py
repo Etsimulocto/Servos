@@ -13,7 +13,7 @@ import webbrowser
 
 ROOT = Path(__file__).resolve().parent
 LOG = ROOT / "servos-launch.log"
-VERSION = "3.6.2"
+VERSION = "3.6.3"
 
 def notify(message):
     print(message, file=sys.stderr)
