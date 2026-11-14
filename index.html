@@ -37,7 +37,7 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 <div class="toolbar"><span class="badge" id="mode">CONNECTING</span><span class="badge" id="armed">DISARMED</span>
 <button id="arm" class="primary">ARM</button><button id="release">RELEASE ALL</button><button id="stop" class="danger">STOP / DISARM</button></div>
 </header>
-<div class="notice">Default: simulated controls. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
+<div class="notice">Joystick mapping safety: movement restricted to 60–120°, with PWM released after 0.6 seconds idle. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
 <h2>Input devices <span class="meta">/ Keyboard + browser Gamepad API (including compatible USB controllers)</span></h2>
 <div class="card"><div id="devices">Detecting controllers…</div><div id="capture">Click a binding, then press a key, gamepad button, or move an axis. Escape cancels.</div>
 <div class="status">Firefox must have focus for keyboard input. Gamepads must be recognized by Firefox. Arbitrary USB serial/HID device IDs require a separate Linux adapter. Input motion requires ARM.</div></div>
@@ -94,7 +94,7 @@ setInterval(async()=>{
   const b=state.bindings[String(s.id)];
   if(!b)continue;
   const delta=(inputActive(b.positive)?1:0)-(inputActive(b.negative)?1:0);
-  if(delta){const next=Math.max(s.min_angle,Math.min(s.max_angle,s.angle+delta*2));if(next!==s.angle)chosen={channel:s.id,angle:next};break}
+  if(delta){const next=Math.max(60,Math.min(120,s.angle+delta*2));if(next!==s.angle)chosen={channel:s.id,angle:next,source:'mapped'};break}
  }
  if(chosen){lastInputTime=Date.now();await request('angle',chosen)}
 },50);
