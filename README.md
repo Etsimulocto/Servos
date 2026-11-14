@@ -52,3 +52,18 @@ Keyboard: the browser window must have focus. Gamepads: press a button so Firefo
 **External devices:** Browser-recognized USB/Bluetooth gamepads display their device ID automatically and can be assigned. Generic USB serial devices, MIDI, custom HID, and Raspberry Pi `/dev/input/event*` inputs not exposed to Firefox are **not yet implemented**; these require a Linux input adapter. Keyboard ID separation is not available through ordinary browser keyboard events.
 
 **Updating:** close running old app processes before `git pull` and relaunch the new code. Existing running processes continue to serve old HTML until restarted.
+
+## SG90 calibration + live controller diagnostics (V3)
+
+The **Input Devices** panel displays every browser-detected controller's identifier, raw axes in the range -1.00 to +1.00, currently held buttons, and each connected channel's binding activation. It is read-only and functions while DISARMED.
+
+Every servo card now has three saved calibration fields:
+- **Min µs**: 1000–1500; default 1000.
+- **Max µs**: 1500–2000; default 2000.
+- **Measured travel °**: 30–180; default 90, entered by the user. This only changes the on-screen *estimated* physical-angle display: it is not position feedback and does not alter pulse output.
+  
+The pulse endpoints affect the PCA9685 output and are bounded to the existing conservative range. Calibration edits are only accepted while **DISARMED**, and are persisted alongside mappings in `servo-mappings.json`. No servo is commanded merely by saving calibration or arming. Changes are not auto-applied to an already running process: stop and restart it after pulling Git updates.
+
+**Test procedure:** disconnect any overheated/damaged servo, check 5V and common ground, connect only one known-good unloaded SG90 to the intended output, test the controller axis readings while disarmed, then cautiously test a small servo movement. Stop immediately at abnormal heat, buzzing, or binding.
+
+This is an open-loop driver. PWM release after 0.6 seconds is not a power disconnect; it cannot determine position, stall, temperature, or protect against incorrect wiring. A hardware supply cutoff is recommended. **Do not use automatic movement unattended.**
