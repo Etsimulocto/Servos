@@ -5,6 +5,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 CHANNELS = 16
 MOTORS = 8
@@ -136,12 +137,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self):
-        if self.path == "/":
-            self._reply(200, HTML, "text/html; charset=utf-8")
-        elif self.path == "/api/state":
+        route = urlsplit(self.path).path
+        if route == "/api/state":
             self._reply(200, controller.state())
+        elif route == "/favicon.ico":
+            self._reply(204, b"", "image/x-icon")
+        elif route in ("/", "/index.html", "/servos", "/servos/"):
+            self._reply(200, HTML, "text/html; charset=utf-8")
+        elif route.startswith("/api/"):
+            self._reply(404, {"error": "API endpoint not found"})
         else:
-            self._reply(404, {"error": "Not found"})
+            # Friendly redirect for bookmarked paths: the UI is always at '/'.
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
     def do_POST(self):
         if self.path != "/api/control":
