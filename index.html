@@ -59,7 +59,7 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 <div class="toolbar"><span class="badge" id="mode">CONNECTING</span><span class="badge" id="armed">DISARMED</span>
 <button id="arm" class="primary">ARM ALL</button><button id="release">RELEASE ALL</button><button id="stop" class="danger">STOP / DISARM</button></div>
 </header>
-<div class="notice">SG90 V3.8: individual ARM / DISARM and gamepad speed per channel, live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input defaults to 60–120° and has adjustable per-channel limits; PWM releases after 0.6 seconds idle. Extended pulses beyond 1000–2000 µs may permanently damage some servos; calibration cannot override mechanical limits. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
+<div class="notice">SG90 V3.9: individual ARM / DISARM and gamepad speed per channel, live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input defaults to 60–120° and has adjustable per-channel limits; PWM releases after 0.6 seconds idle. Extended pulses beyond 1000–2000 µs may permanently damage some servos; calibration cannot override mechanical limits. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
 
 <h2>PWM Diagnostics &amp; Timing <span class="meta">/ PCA9685 · global settings for all channels</span></h2>
 <div class="card">
@@ -123,6 +123,9 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 </main><div role="alert" id="toast"></div>
 <script>
 let state=null, busy=false, capture=null, keys=new Set(), armedAt=0;
+let requestSerial=0, renderedAt=0;
+const motion=new Map();
+const MOTION_TICK_MS=25, SPEED_RATE=8, RAMP_ACCEL=200;
 let lastDiagnostics=0, freezeLog=false;
 const events=[];
 function logEvent(label,details=''){
@@ -147,7 +150,7 @@ function diagnosticReport(){
  for(const c of state?.servos||[]){
   const b=state.bindings?.[String(c.id)]||{};
   lines.push('CH '+String(c.id).padStart(2,'0')+' '+c.name+' | connected='+c.connected+' PWM='+c.output+' angle='+c.angle+
-   ' armed='+c.armed+' | MIN/CENTER/MAX='+c.min_us+'/'+c.center_us+'/'+c.max_us+'us | physical span='+c.physical_span+' | gamepad range='+c.map_min+'-'+c.map_max+' | speed='+c.speed+' deg/step'+
+   ' armed='+c.armed+' | MIN/CENTER/MAX='+c.min_us+'/'+c.center_us+'/'+c.max_us+'us | physical span='+c.physical_span+' | gamepad range='+c.map_min+'-'+c.map_max+' | speed='+c.speed+' ('+(c.speed*8)+' deg/s) ramp='+c.ramp+
    ' | commanded pulse='+c.pulse_us+'us | PWM ticks='+c.pwm_ticks+' | quantized pulse='+c.nominal_pulse_us+'us'+
    ' | negative='+bindingLabel(b.negative)+' ['+(inputActive(b.negative)?'ACTIVE':'idle')+']'+
    ' | positive='+bindingLabel(b.positive)+' ['+(inputActive(b.positive)?'ACTIVE':'idle')+']');
@@ -250,28 +253,66 @@ window.addEventListener('keydown',e=>{
  if(state?.armed && state.bindings && Object.values(state.bindings).some(m=>Object.values(m).some(b=>b?.type==='keyboard'&&b.code===e.code)))e.preventDefault()
 });
 window.addEventListener('keyup',e=>keys.delete(e.code));
-window.addEventListener('blur',()=>{keys.clear();axisReady.clear()});
-document.addEventListener('visibilitychange',()=>{if(document.hidden){keys.clear();axisReady.clear()}});
-setInterval(async()=>{
+function clearMotion(){motion.clear()}
+window.addEventListener('blur',()=>{keys.clear();axisReady.clear();clearMotion()});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){keys.clear();axisReady.clear();clearMotion()}});
+setInterval(()=>{
  pollDevices();
- if(!state?.armed||document.hidden||capture||busy||Date.now()-lastInputTime<125)return;
- let chosen=null;
+ if(!state?.armed||document.hidden||capture){clearMotion();return}
+ if(busy)return;
+ const now=performance.now();
  for(const s of state.servos){
-  if(!s.connected||!s.armed)continue;
+  if(!s.connected||!s.armed){motion.delete(s.id);continue}
   const b=state.bindings[String(s.id)];
-  if(!b)continue;
-  const delta=(inputActive(b.positive)?1:0)-(inputActive(b.negative)?1:0);
-  if(delta){const next=Math.max(s.map_min,Math.min(s.map_max,s.angle+delta*(s.speed??4)));if(next!==s.angle)chosen={channel:s.id,angle:next,source:'mapped'};break}
+  if(!b){motion.delete(s.id);continue}
+  const dir=(inputActive(b.positive)?1:0)-(inputActive(b.negative)?1:0);
+  if(!dir){motion.delete(s.id);continue} // no commanded coast
+  let m=motion.get(s.id);
+  if(!m){m={position:s.angle,velocity:0,last:now,dir};motion.set(s.id,m)}
+  if(m.dir!==dir){m.position=s.angle;m.velocity=0;m.dir=dir;m.last=now}
+  const dt=Math.min(0.1,Math.max(0,(now-m.last)/1000));
+  m.last=now;
+  const rate=(s.speed??4)*SPEED_RATE;
+  m.velocity=s.ramp===false?rate:Math.min(rate,m.velocity+RAMP_ACCEL*dt);
+  const limit=dir>0?s.map_max:s.map_min;
+  const remaining=Math.abs(limit-m.position);
+  const brakingRate=s.ramp===false?rate:Math.sqrt(2*RAMP_ACCEL*remaining);
+  m.position=Math.max(s.map_min,Math.min(s.map_max,m.position+
+                  dir*Math.min(m.velocity,brakingRate)*dt));
+  const next=Math.round(m.position);
+  if(next!==s.angle){request('angle',{channel:s.id,angle:next,source:'mapped'},true);break}
  }
- if(chosen){lastInputTime=Date.now();await request('angle',chosen)}
-},50);
+},MOTION_TICK_MS);
 const $=s=>document.querySelector(s);
 function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n}
 function error(message){logEvent('ERROR',message);refreshDiagnosticReport();const t=$('#toast');t.textContent=message;t.style.display='block';setTimeout(()=>{if(t.textContent===message)t.style.display='none'},5000)}
-async function request(action,extra={}){
- if(busy)return;busy=true;
- try{const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...extra})});const data=await r.json();if(!r.ok)throw Error(data.error||'Request failed');state=data;logEvent('Control action',action+' '+JSON.stringify(extra));render()}
- catch(e){error(e.message)}finally{busy=false}
+function renderMotionState(){
+ for(const s of state?.servos||[]){
+  const number=document.getElementById('servo-angle-'+s.id);
+  const range=document.getElementById('servo-range-'+s.id);
+  if(number)number.textContent=s.angle+'°';
+  if(range && document.activeElement!==range)range.value=s.angle;
+ }
+ if(performance.now()-renderedAt>500){render();renderedAt=performance.now()}
+}
+async function request(action,extra={},fast=false){
+ const safety=['stop','disarm','disarm_channel','release_all','release'].includes(action);
+ if(busy&&!safety)return;
+ if(safety)clearMotion();
+ if(!safety)busy=true;
+ const serial=++requestSerial;
+ try{
+  const r=await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...extra})});
+  const data=await r.json();
+  if(!r.ok)throw Error(data.error||'Request failed');
+  if(serial<requestSerial)return; // old angle response cannot override newer STOP
+  state=data;
+  if(!fast)clearMotion();
+  if(!fast||!state.armed){render();renderedAt=performance.now()}
+  else renderMotionState();
+  if(!fast)logEvent('Control action',action+' '+JSON.stringify(extra));
+ }catch(e){error(e.message);clearMotion()}
+ finally{if(!safety)busy=false}
 }
 function timingPanel(){
  const t=state?.timing;if(!t)return;
@@ -296,7 +337,7 @@ function render(){
   top.append(el('span','channel','CH '+String(s.id).padStart(2,'0')),el('span','status',s.connected?(s.armed?(s.output?'ARMED / PWM ACTIVE':'ARMED / IDLE'):'DISARMED'):'RESERVED'));
   const name=el('input','name');name.value=s.name;name.maxLength=32;name.setAttribute('aria-label','Servo '+(s.id+1)+' name');
   name.addEventListener('change',()=>request('rename',{channel:s.id,name:name.value}));
-  const number=el('div','number',String(s.angle)+'°');const range=el('input');range.type='range';range.min=0;range.max=180;range.step=1;range.value=s.angle;
+  const number=el('div','number',String(s.angle)+'°');number.id='servo-angle-'+s.id;const range=el('input');range.id='servo-range-'+s.id;range.type='range';range.min=0;range.max=180;range.step=1;range.value=s.angle;
   range.disabled=!s.armed||!s.connected;range.setAttribute('aria-label',s.name+' angle');
   range.addEventListener('input',()=>number.textContent=range.value+'°');
   range.addEventListener('change',()=>request('angle',{channel:s.id,angle:Number(range.value)}));
@@ -354,15 +395,18 @@ function render(){
 
   const speedPanel=el('div','cal');
   speedPanel.append(el('div','mapper-title','GAMEPAD MOVEMENT SPEED'));
-  const speedLabel=el('label','status','Step size: '+(s.speed??4)+'° / 125 ms');
+  const speedLabel=el('label','status','Travel rate: '+((s.speed??4)*8)+'°/s · ~25ms updates');
   const speedInput=el('input');
   speedInput.type='range';speedInput.min=1;speedInput.max=8;speedInput.step=1;
   speedInput.value=s.speed??4;speedInput.disabled=s.armed;
-  speedInput.oninput=()=>speedLabel.textContent='Step size: '+speedInput.value+'° / 125 ms';
+  speedInput.oninput=()=>speedLabel.textContent='Travel rate: '+(Number(speedInput.value)*8)+'°/s · ~25ms updates';
   const speedSave=el('button','','SAVE SPEED');
   speedSave.disabled=s.armed;
-  speedSave.onclick=()=>request('speed',{channel:s.id,speed:Number(speedInput.value)});
-  speedPanel.append(speedLabel,speedInput,speedSave);
+  const rampLabel=el('label','status',' Gentle acceleration / deceleration');
+  const rampInput=el('input');rampInput.type='checkbox';rampInput.checked=s.ramp!==false;rampInput.disabled=s.armed;
+  rampLabel.prepend(rampInput);
+  speedSave.onclick=()=>request('speed',{channel:s.id,speed:Number(speedInput.value),ramp:rampInput.checked});
+  speedPanel.append(speedLabel,speedInput,rampLabel,speedSave,el('div','status','Releasing a control stops motion commands immediately; no coasting.'));
   const mapper=el('div','mapper'),mt=el('div','mapper-title','INPUT MAPPING');
   mapper.append(mt);
   for(const direction of ['negative','positive']){
