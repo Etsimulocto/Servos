@@ -26,6 +26,12 @@ input[type=range]{width:100%;accent-color:var(--cyan);cursor:pointer}.actions{di
 .bind-row .clear{flex:0 0 auto;width:32px;text-align:center}
 #devices{margin:9px 0 0;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
 #capture{font-size:12px;color:var(--gold);margin:6px 0}
+#live{white-space:pre-wrap;font:12px ui-monospace,monospace;color:var(--cyan);background:#0b141c;padding:10px;border-radius:8px;margin:10px 0;max-height:220px;overflow:auto}
+.cal{border-top:1px solid var(--line);padding-top:12px;margin-top:12px}
+.cal-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.cal-row label{font-size:11px;color:var(--muted)}
+.cal-row input{width:100%;min-width:0;margin-top:4px;border:1px solid var(--line);background:#0c151e;color:var(--ink);border-radius:7px;padding:7px;font:13px system-ui}
+.cal button{margin-top:8px;width:100%}
 footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px;background:#202a2c;border-left:3px solid var(--gold);font-size:13px;color:#dce2cf;border-radius:4px}
 #toast{position:fixed;right:16px;bottom:16px;background:#4c202b;color:white;padding:12px 16px;border-radius:10px;display:none;max-width:350px}
 </style>
@@ -37,16 +43,18 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 <div class="toolbar"><span class="badge" id="mode">CONNECTING</span><span class="badge" id="armed">DISARMED</span>
 <button id="arm" class="primary">ARM</button><button id="release">RELEASE ALL</button><button id="stop" class="danger">STOP / DISARM</button></div>
 </header>
-<div class="notice">Joystick mapping safety: movement restricted to 60–120°, with PWM released after 0.6 seconds idle. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
+<div class="notice">SG90 V3: live gamepad diagnostics, per-servo pulse calibration and measured-travel display. Mapped input stays within 60–120°; PWM releases after 0.6 seconds idle. Hardware mode only moves connected channels 0–5 after ARM + a deliberate command. Use a separate regulated 5V servo supply with shared ground. STOP releases PWM, it does not cut external power or mechanically brake motors.</div>
 <h2>Input devices <span class="meta">/ Keyboard + browser Gamepad API (including compatible USB controllers)</span></h2>
 <div class="card"><div id="devices">Detecting controllers…</div><div id="capture">Click a binding, then press a key, gamepad button, or move an axis. Escape cancels.</div>
-<div class="status">Firefox must have focus for keyboard input. Gamepads must be recognized by Firefox. Arbitrary USB serial/HID device IDs require a separate Linux adapter. Input motion requires ARM.</div></div>
+<div id="live">No controller inputs yet</div>
+<div class="status">Input diagnostics are read-only and work while DISARMED. Axis neutral should be near 0.00. Avoid holding a stick while capturing a binding. Firefox must have focus for keyboard input. Gamepads must be recognized by Firefox. Arbitrary USB serial/HID device IDs require a separate Linux adapter. Input motion requires ARM.</div></div>
 <h2>Servo Control <span class="meta">/ Six active, ten reserved</span></h2><div class="grid" id="servos"></div>
 <h2>Motor Expansion <span class="meta">/ Future drivers, not wired</span></h2><div class="grid" id="motors"></div>
 <footer>Local Pi dashboard • 50 Hz output • Default 1000–2000 µs • No automatic movement on startup</footer>
 </main><div role="alert" id="toast"></div>
 <script>
 let state=null, busy=false, capture=null, keys=new Set(), armedAt=0;
+let lastDiagnostics=0;
 const axisReady=new Set();let lastInputTime=0;
 const bindingLabel=b=>!b?'NOT ASSIGNED':b.type==='keyboard'?b.code:(b.type==='gamepad_button'?'BTN ':'AXIS ')+b.index+(b.type==='gamepad_axis'?(b.direction<0?' −':' +'):'')+' / '+b.device_id.slice(0,24);
 function pads(){return Array.from(navigator.getGamepads?navigator.getGamepads():[]).filter(Boolean)}
@@ -66,6 +74,22 @@ function inputActive(b){
 }
 function pollDevices(){
  const ps=pads();
+ if(Date.now()-lastDiagnostics>140){
+  lastDiagnostics=Date.now();
+  const lines=[];
+  for(const p of ps){
+    const axes=p.axes.map((v,i)=>'Axis '+i+': '+v.toFixed(2)).join('  |  ');
+    const pressed=p.buttons.map((b,i)=>b.pressed?i:null).filter(x=>x!==null);
+    lines.push('Device '+p.index+' / '+p.id+'\\n'+axes+'\\nButtons held: '+(pressed.join(', ')||'none'));
+  }
+  if(state?.bindings){
+    for(const c of state.servos.filter(s=>s.connected)){
+     const b=state.bindings[String(c.id)];
+     if(b)lines.push('CH '+String(c.id).padStart(2,'0')+' mapped: − '+(inputActive(b.negative)?'ACTIVE':'idle')+' / + '+(inputActive(b.positive)?'ACTIVE':'idle'));
+    }
+  }
+  $('#live').textContent=lines.join('\\n\\n')||'No gamepad visible. Press any controller button to activate it in Firefox.';
+ }
  $('#devices').textContent=ps.length?ps.map(p=>'Device '+p.index+': '+p.id+' ('+p.buttons.length+' buttons, '+p.axes.length+' axes)').join(' | '):'No gamepads detected. Keyboard is available. Press a controller button to activate Gamepad API.';
  if(capture){
   for(const p of ps){
@@ -125,6 +149,22 @@ function render(){
   center.addEventListener('click',()=>request('angle',{channel:s.id,angle:90}));
   release.addEventListener('click',()=>request('release',{channel:s.id}));
   actions.append(center,release);
+  const cal=el('div','cal');
+  cal.append(el('div','mapper-title','SG90 CALIBRATION (POWER OFF TO CHANGE WIRING)'));
+  const fields=el('div','cal-row');
+  function field(label,value,min,max){
+    const wrap=el('label','',label),input=el('input');
+    input.type='number';input.min=min;input.max=max;input.step=1;input.value=value;
+    input.disabled=state.armed;wrap.append(input);fields.append(wrap);return input;
+  }
+  const minPulse=field('Min µs',s.min_us,1000,1500);
+  const maxPulse=field('Max µs',s.max_us,1500,2000);
+  const spanField=field('Measured travel °',s.physical_span,30,180);
+  const save=el('button','','SAVE CALIBRATION');save.disabled=state.armed;
+  save.onclick=()=>request('calibration',{channel:s.id,min_us:Number(minPulse.value),max_us:Number(maxPulse.value),physical_span:Number(spanField.value)});
+  const approx=(s.angle/180-.5)*s.physical_span;
+  const display=el('div','status','Estimated physical position: '+(approx>=0?'+':'')+approx.toFixed(1)+'° relative to center (entered travel: '+s.physical_span+'°). This is an estimate, not a position sensor.');
+  cal.append(fields,save,display);
   const mapper=el('div','mapper'),mt=el('div','mapper-title','INPUT MAPPING');
   mapper.append(mt);
   for(const direction of ['negative','positive']){
@@ -135,7 +175,7 @@ function render(){
    const clear=el('button','clear','×');clear.title='Clear binding';clear.onclick=()=>request('binding',{channel:s.id,direction,binding:null});
    wrap.append(label,captureButton,clear);mapper.append(wrap)
   }
-  card.append(top,name,number,range,actions,mapper);root.append(card)
+  card.append(top,name,number,range,actions,cal,mapper);root.append(card)
  }
  const motors=$('#motors');motors.replaceChildren();
  for(const m of state.motors){const c=el('article','card reserved');const top=el('div','top');
