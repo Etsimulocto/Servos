@@ -4,6 +4,7 @@ import argparse
 import json
 import threading
 import os
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -58,6 +59,8 @@ class Controller:
         self.lock = threading.RLock()
         self.driver = PCA9685(address, bus) if hardware else None
         self.armed = False
+        self.last_command = [0.0] * CHANNELS
+        self.shutdown = threading.Event()
         self.channels = [
             dict(id=i, name=f"Servo {i+1:02d}", connected=(i < 6),
                  angle=90, min_angle=0, max_angle=180,
@@ -152,6 +155,8 @@ class Controller:
                     angle = payload.get("angle")
                     if type(angle) not in (int, float) or not (0 <= angle <= 180):
                         raise ValueError("Angle must be 0 to 180")
+                    if payload.get("source") == "mapped" and not 60 <= angle <= 120:
+                        raise ValueError("Mapped inputs restricted to 60–120 degrees")
                     if not servo["min_angle"] <= angle <= servo["max_angle"]:
                         raise ValueError("Outside configured limits")
                     us = round(servo["min_us"] + (angle / 180) *
@@ -160,9 +165,25 @@ class Controller:
                         self.driver.set_us(idx, us)
                     servo["angle"] = round(angle)
                     servo["output"] = True
+                    self.last_command[idx] = time.monotonic()
             else:
                 raise ValueError("Unknown action")
             return self.state()
+
+    def watchdog(self):
+        # Releasing PWM does not disconnect power or detect stalls.
+        while not self.shutdown.wait(0.1):
+            with self.lock:
+                now = time.monotonic()
+                for servo in self.channels:
+                    idx = servo["id"]
+                    if servo["output"] and now - self.last_command[idx] > 0.6:
+                        try:
+                            if self.driver:
+                                self.driver.release(idx)
+                            servo["output"] = False
+                        except OSError:
+                            self.armed = False
 
     def release_all(self):
         for servo in self.channels:
@@ -228,6 +249,8 @@ def main():
     args = parser.parse_args()
     controller = Controller(args.hardware, args.address, args.bus)
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
+    watcher = threading.Thread(target=controller.watchdog, daemon=True)
+    watcher.start()
     print(f"Servos {controller.state()['mode']} at http://{args.bind}:{args.port}")
     try:
         server.serve_forever()
@@ -235,6 +258,8 @@ def main():
         pass
     finally:
         server.server_close()
+        controller.shutdown.set()
+        watcher.join(timeout=2)
         with controller.lock:
             controller.armed = False
             controller.release_all()
