@@ -34,6 +34,15 @@ input[type=range]{width:100%;accent-color:var(--cyan);cursor:pointer}.actions{di
 .cal button{margin-top:8px;width:100%}
 footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px;background:#202a2c;border-left:3px solid var(--gold);font-size:13px;color:#dce2cf;border-radius:4px}
 #toast{position:fixed;right:16px;bottom:16px;background:#4c202b;color:white;padding:12px 16px;border-radius:10px;display:none;max-width:350px}
+
+/* Camera-assisted calibration: browser-local recording, no hidden uploads. */
+.recorder-layout{display:grid;grid-template-columns:minmax(260px,1.2fr) minmax(230px,1fr);gap:14px;align-items:start}
+#servo-camera{display:block;width:100%;max-height:400px;aspect-ratio:16/9;object-fit:contain;background:#05090d;border:1px solid var(--line);border-radius:10px}
+.recorder-controls{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}
+.recorder-controls button{font-size:12px}
+#recording-status{margin-top:10px;color:var(--gold);font-size:13px}
+#recording-marks{max-height:130px;overflow:auto;white-space:pre-wrap;font:12px ui-monospace,monospace;color:var(--muted);background:#0c151e;padding:8px;border-radius:8px}
+@media(max-width:700px){.recorder-layout{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -49,6 +58,36 @@ footer{color:var(--muted);font-size:12px;margin:25px 0}.notice{padding:11px 14px
 <div class="log-actions"><button id="copylog" type="button" class="primary">COPY DIAGNOSTIC LOG</button><button id="snapshot" type="button">FREEZE / REFRESH SNAPSHOT</button><button id="clearlog" type="button">CLEAR EVENTS</button><span id="copy-status" class="status" role="status"></span></div>
 <textarea id="live" readonly rows="12" spellcheck="false" aria-label="Copyable controller diagnostics log">No controller inputs yet</textarea>
 <div class="status">Input diagnostics are read-only and work while DISARMED. Axis neutral should be near 0.00. Avoid holding a stick while capturing a binding. Firefox must have focus for keyboard input. Gamepads must be recognized by Firefox. Arbitrary USB serial/HID device IDs require a separate Linux adapter. Input motion requires ARM.</div></div>
+
+<h2>Manual rotation recorder <span class="meta">/ Webcam video + time markers</span></h2>
+<div class="card">
+  <div class="notice">SG90 has no position sensor. This records a webcam video of you turning the unplugged servo by hand; it does not electronically measure shaft angle. Video stays in your browser until you download it. DISCONNECT SERVO POWER before turning the shaft manually.</div>
+  <div class="recorder-layout">
+    <div>
+      <video id="servo-camera" autoplay muted playsinline aria-label="Camera preview of servo"></video>
+      <div class="recorder-controls">
+        <button id="camera-open" type="button" class="primary">START CAMERA</button>
+        <button id="camera-close" type="button" disabled>STOP CAMERA</button>
+        <button id="rec-start" type="button" disabled class="primary">RECORD</button>
+        <button id="rec-stop" type="button" disabled class="danger">STOP RECORDING</button>
+        <button id="rec-download" type="button" disabled>DOWNLOAD VIDEO</button>
+      </div>
+      <div id="recording-status" role="status">Camera off. No recording.</div>
+    </div>
+    <div>
+      <div class="mapper-title">MARK IMPORTANT POSITIONS DURING RECORDING</div>
+      <div class="recorder-controls">
+        <button type="button" class="rec-mark" data-mark="LEFT END" disabled>LEFT STOP</button>
+        <button type="button" class="rec-mark" data-mark="CENTER" disabled>CENTER</button>
+        <button type="button" class="rec-mark" data-mark="RIGHT END" disabled>RIGHT STOP</button>
+      </div>
+      <div class="status">Place a visible pointer or piece of tape on the servo horn, with a protractor behind it if available. Begin recording and press the marks at each position.</div>
+      <div id="recording-marks">No position marks yet.</div>
+      <div class="recorder-controls"><button type="button" id="marks-download" disabled>DOWNLOAD MARKERS (.JSON)</button></div>
+      <div class="status">Uses Firefox's camera permission. Requires a connected camera and browser recording support. Recordings are kept locally, not sent to the Pi server or GitHub. Keep this page open until you download.</div>
+    </div>
+  </div>
+</div>
 <h2>Servo Control <span class="meta">/ Six active, ten reserved</span></h2><div class="grid" id="servos"></div>
 <h2>Motor Expansion <span class="meta">/ Future drivers, not wired</span></h2><div class="grid" id="motors"></div>
 <footer>Local Pi dashboard • 50 Hz output • Default 1000–2000 µs • No automatic movement on startup</footer>
@@ -295,6 +334,91 @@ function render(){
  c.append(top,el('div','number','MOTOR '+String(m.id+1).padStart(2,'0')),el('div','status','Driver, direction and speed controls coming later'));
  motors.append(c)}
 }
+
+/* Manual-motion evidence capture: camera video + relative timestamps, no inferred angles. */
+let cameraStream=null, cameraRecorder=null, recordedChunks=[], recordedBlob=null;
+let recordedUrl=null, recordStartedAt=0, recordMarks=[], recordingStamp='';
+function recordingStatus(message){document.querySelector('#recording-status').textContent=message}
+function recorderUI(){
+ const running=!!cameraStream, recording=cameraRecorder?.state==='recording';
+ $('#camera-open').disabled=running;
+ $('#camera-close').disabled=!running||recording;
+ $('#rec-start').disabled=!running||recording||!window.MediaRecorder;
+ $('#rec-stop').disabled=!recording;
+ $('#rec-download').disabled=!recordedBlob;
+ $('#marks-download').disabled=!recordedBlob||recordMarks.length===0;
+ document.querySelectorAll('.rec-mark').forEach(btn=>btn.disabled=!recording);
+ $('#recording-marks').textContent=recordMarks.length
+  ?recordMarks.map(m=>m.seconds.toFixed(2)+'s | '+m.label).join('\n')
+  :'No position marks yet.';
+}
+function closeServoCamera(){
+ if(cameraRecorder?.state==='recording')return;
+ if(cameraStream){for(const track of cameraStream.getTracks())track.stop();cameraStream=null}
+ $('#servo-camera').srcObject=null;
+ recordingStatus(recordedBlob?'Camera stopped. Clip ready to download.':'Camera stopped.');
+ recorderUI();
+}
+$('#camera-open').onclick=async()=>{
+ try{
+  if(!navigator.mediaDevices?.getUserMedia)throw Error('Browser camera API unavailable. Open the localhost dashboard in Firefox.');
+  cameraStream=await navigator.mediaDevices.getUserMedia({video:{idealWidth:1280,idealHeight:720},audio:false});
+  $('#servo-camera').srcObject=cameraStream;
+  cameraStream.getVideoTracks()[0]?.addEventListener('ended',()=>{if(cameraRecorder?.state==='recording')cameraRecorder.stop();closeServoCamera()});
+  recordingStatus('Camera ready. Servo power must be OFF for manual movement.');
+  recorderUI();
+ }catch(e){recordingStatus('Camera error: '+e.message);closeServoCamera();recordingStatus('Camera error: '+e.message)}
+};
+$('#camera-close').onclick=closeServoCamera;
+$('#rec-start').onclick=()=>{
+ try{
+  if(!cameraStream||!window.MediaRecorder)throw Error('Connect camera first; recording not supported.');
+  if(cameraRecorder?.state==='recording')return;
+  const codecs=['video/webm;codecs=vp8','video/webm'];
+  const mimeType=codecs.find(t=>MediaRecorder.isTypeSupported(t));
+  cameraRecorder=new MediaRecorder(cameraStream,mimeType?{mimeType}:undefined);
+  recordedChunks=[];recordedBlob=null;recordMarks=[];
+  if(recordedUrl){URL.revokeObjectURL(recordedUrl);recordedUrl=null}
+  recordingStamp=new Date().toISOString().replace(/[:.]/g,'-');
+  cameraRecorder.ondataavailable=e=>{if(e.data.size)recordedChunks.push(e.data)};
+  cameraRecorder.onerror=e=>recordingStatus('Recording error: '+(e.error?.message||'unknown'));
+  cameraRecorder.onstop=()=>{
+   recordedBlob=new Blob(recordedChunks,{type:cameraRecorder.mimeType||'video/webm'});
+   recordingStatus('Recording complete: '+Math.round(recordedBlob.size/1024)+' KiB. DOWNLOAD VIDEO to save it.');
+   recorderUI();
+  };
+  cameraRecorder.start(500);
+  recordStartedAt=performance.now();
+  recordingStatus('RECORDING • turn the unpowered servo by hand and mark positions');
+  recorderUI();
+ }catch(e){recordingStatus('Could not record: '+e.message)}
+};
+$('#rec-stop').onclick=()=>{
+ if(cameraRecorder?.state==='recording'){cameraRecorder.stop();recordingStatus('Finishing recording…');recorderUI()}
+};
+document.querySelectorAll('.rec-mark').forEach(btn=>btn.onclick=()=>{
+ if(cameraRecorder?.state!=='recording')return;
+ recordMarks.push({seconds:Math.round((performance.now()-recordStartedAt))/1000,label:btn.dataset.mark});
+ recorderUI();
+});
+function fileDownload(blob,filename){
+ const url=URL.createObjectURL(blob),a=document.createElement('a');
+ a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();
+ setTimeout(()=>URL.revokeObjectURL(url),60000);
+}
+$('#rec-download').onclick=()=>{
+ if(!recordedBlob)return;
+ fileDownload(recordedBlob,'servos-manual-rotation-'+recordingStamp+'.webm');
+ recordingStatus('Video download requested. Save it from Firefox Downloads.');
+};
+$('#marks-download').onclick=()=>{
+ if(!recordedBlob)return;
+ const data={recorded_at:recordingStamp,description:'Manual SG90 movement: timestamps are seconds from START RECORDING; position labels are observations, NOT measurements.',marks:recordMarks,servo_state_at_export:state?.servos?.map(s=>({channel:s.id,name:s.name,armed:s.armed,angle_command:s.angle,min_us:s.min_us,max_us:s.max_us}))||[]};
+ fileDownload(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),'servos-manual-rotation-'+recordingStamp+'-marks.json');
+};
+window.addEventListener('pagehide',()=>{if(cameraStream)for(const t of cameraStream.getTracks())t.stop()});
+recorderUI();
+
 $('#copylog').onclick=copyDiagnosticReport;
 $('#snapshot').onclick=()=>{freezeLog=!freezeLog;$('#snapshot').textContent=freezeLog?'RESUME LIVE REPORT':'FREEZE / REFRESH SNAPSHOT';refreshDiagnosticReport(true)};
 $('#clearlog').onclick=()=>{events.length=0;refreshDiagnosticReport(true);$('#copy-status').textContent='Events cleared'};
