@@ -64,7 +64,7 @@ class Controller:
         self.channels = [
             dict(id=i, name=f"Servo {i+1:02d}", connected=(i < 6),
                  angle=90, min_angle=0, max_angle=180,
-                 min_us=1000, max_us=2000, output=False)
+                 min_us=1000, max_us=2000, physical_span=90, output=False)
             for i in range(CHANNELS)
         ]
         self.bindings = {str(i): {"negative": None, "positive": None} for i in range(CHANNELS)}
@@ -79,6 +79,14 @@ class Controller:
                 name = data.get("names", {}).get(str(i))
                 if isinstance(name, str) and 1 <= len(name) <= 32:
                     servo["name"] = name
+                cal = data.get("calibration", {}).get(str(i), {})
+                if isinstance(cal, dict):
+                    lo, hi, span = cal.get("min_us"), cal.get("max_us"), cal.get("physical_span")
+                    if (type(lo) is int and type(hi) is int and
+                        1000 <= lo <= 1500 and 1500 <= hi <= 2000 and
+                        lo < hi and type(span) is int and 30 <= span <= 180):
+                        servo["min_us"], servo["max_us"] = lo, hi
+                        servo["physical_span"] = span
                 for direction in ("negative", "positive"):
                     binding = data.get("bindings", {}).get(str(i), {}).get(direction)
                     if self._valid_binding(binding):
@@ -100,7 +108,10 @@ class Controller:
 
     def _save_config(self):
         data = {"names": {str(s["id"]): s["name"] for s in self.channels},
-                "bindings": self.bindings}
+                "bindings": self.bindings,
+                "calibration": {str(s["id"]): {
+                    "min_us": s["min_us"], "max_us": s["max_us"],
+                    "physical_span": s["physical_span"]} for s in self.channels}}
         temp = CONFIG.with_suffix(".json.tmp")
         temp.write_text(json.dumps(data, indent=2) + "\n")
         os.replace(temp, CONFIG)
@@ -125,7 +136,7 @@ class Controller:
                 self.release_all()
             elif op == "release_all":
                 self.release_all()
-            elif op in ("angle", "release", "rename", "binding"):
+            elif op in ("angle", "release", "rename", "binding", "calibration"):
                 idx = payload.get("channel")
                 if type(idx) is not int or not (0 <= idx < CHANNELS):
                     raise ValueError("Invalid servo channel")
@@ -142,6 +153,19 @@ class Controller:
                     if direction not in ("negative", "positive") or not self._valid_binding(binding):
                         raise ValueError("Invalid input binding")
                     self.bindings[str(idx)][direction] = binding
+                    self._save_config()
+                elif op == "calibration":
+                    # Calibration changes are only permitted while disarmed.
+                    if self.armed:
+                        raise ValueError("Disarm before changing calibration")
+                    lo = payload.get("min_us")
+                    hi = payload.get("max_us")
+                    span = payload.get("physical_span")
+                    if not (type(lo) is int and type(hi) is int and type(span) is int
+                            and 1000 <= lo <= 1500 and 1500 <= hi <= 2000
+                            and lo < hi and 30 <= span <= 180):
+                        raise ValueError("Safe range: min 1000–1500 µs, max 1500–2000 µs, estimated travel 30–180°")
+                    servo["min_us"], servo["max_us"], servo["physical_span"] = lo, hi, span
                     self._save_config()
                 elif op == "release":
                     if self.driver:
