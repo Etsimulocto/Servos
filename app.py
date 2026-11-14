@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-APP_VERSION = '3.1.2'
+APP_VERSION = '3.2.0'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
@@ -65,7 +65,7 @@ class Controller:
         self.channels = [
             dict(id=i, name=f"Servo {i+1:02d}", connected=(i < 6),
                  angle=90, min_angle=0, max_angle=180,
-                 min_us=1000, max_us=2000, physical_span=90, output=False)
+                 min_us=1000, max_us=2000, physical_span=90, map_min=60, map_max=120, output=False)
             for i in range(CHANNELS)
         ]
         self.bindings = {str(i): {"negative": None, "positive": None} for i in range(CHANNELS)}
@@ -88,6 +88,11 @@ class Controller:
                         lo < hi and type(span) is int and 30 <= span <= 180):
                         servo["min_us"], servo["max_us"] = lo, hi
                         servo["physical_span"] = span
+                mapped = data.get("mapped_limits", {}).get(str(i), {})
+                if isinstance(mapped, dict):
+                    mn, mx = mapped.get("min"), mapped.get("max")
+                    if type(mn) is int and type(mx) is int and 0 <= mn < 90 < mx <= 180:
+                        servo["map_min"], servo["map_max"] = mn, mx
                 for direction in ("negative", "positive"):
                     binding = data.get("bindings", {}).get(str(i), {}).get(direction)
                     if self._valid_binding(binding):
@@ -110,6 +115,7 @@ class Controller:
     def _save_config(self):
         data = {"names": {str(s["id"]): s["name"] for s in self.channels},
                 "bindings": self.bindings,
+                "mapped_limits": {str(s["id"]): {"min": s["map_min"], "max": s["map_max"]} for s in self.channels},
                 "calibration": {str(s["id"]): {
                     "min_us": s["min_us"], "max_us": s["max_us"],
                     "physical_span": s["physical_span"]} for s in self.channels}}
@@ -137,7 +143,7 @@ class Controller:
                 self.release_all()
             elif op == "release_all":
                 self.release_all()
-            elif op in ("angle", "release", "rename", "binding", "calibration"):
+            elif op in ("angle", "release", "rename", "binding", "calibration", "mapped_limits"):
                 idx = payload.get("channel")
                 if type(idx) is not int or not (0 <= idx < CHANNELS):
                     raise ValueError("Invalid servo channel")
@@ -168,6 +174,15 @@ class Controller:
                         raise ValueError("Safe range: min 1000–1500 µs, max 1500–2000 µs, estimated travel 30–180°")
                     servo["min_us"], servo["max_us"], servo["physical_span"] = lo, hi, span
                     self._save_config()
+                elif op == "mapped_limits":
+                    if self.armed:
+                        raise ValueError("Disarm before editing gamepad limits")
+                    minimum, maximum = payload.get("minimum"), payload.get("maximum")
+                    if not (type(minimum) is int and type(maximum) is int and
+                            0 <= minimum < 90 < maximum <= 180):
+                        raise ValueError("Limits must satisfy 0 <= minimum < 90 < maximum <= 180")
+                    servo["map_min"], servo["map_max"] = minimum, maximum
+                    self._save_config()
                 elif op == "release":
                     if self.driver:
                         self.driver.release(idx)
@@ -180,8 +195,8 @@ class Controller:
                     angle = payload.get("angle")
                     if type(angle) not in (int, float) or not (0 <= angle <= 180):
                         raise ValueError("Angle must be 0 to 180")
-                    if payload.get("source") == "mapped" and not 60 <= angle <= 120:
-                        raise ValueError("Mapped inputs restricted to 60–120 degrees")
+                    if payload.get("source") == "mapped" and not servo["map_min"] <= angle <= servo["map_max"]:
+                        raise ValueError("Mapped input exceeds this channel\u0027s configured limits")
                     if not servo["min_angle"] <= angle <= servo["max_angle"]:
                         raise ValueError("Outside configured limits")
                     us = round(servo["min_us"] + (angle / 180) *
