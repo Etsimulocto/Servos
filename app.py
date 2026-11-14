@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-APP_VERSION = '3.3.0'
+APP_VERSION = '3.4.0'
 CHANNELS = 16
 MOTORS = 8
 HTML = Path(__file__).with_name("index.html").read_bytes()
@@ -65,7 +65,7 @@ class Controller:
         self.channels = [
             dict(id=i, name=f"Servo {i+1:02d}", connected=(i < 6),
                  angle=90, min_angle=0, max_angle=180,
-                 min_us=1000, max_us=2000, physical_span=90, map_min=60, map_max=120, armed=False, output=False)
+                 min_us=1000, max_us=2000, physical_span=90, map_min=60, map_max=120, speed=4, armed=False, output=False)
             for i in range(CHANNELS)
         ]
         self.bindings = {str(i): {"negative": None, "positive": None} for i in range(CHANNELS)}
@@ -93,6 +93,9 @@ class Controller:
                     mn, mx = mapped.get("min"), mapped.get("max")
                     if type(mn) is int and type(mx) is int and 0 <= mn < 90 < mx <= 180:
                         servo["map_min"], servo["map_max"] = mn, mx
+                saved_speed = data.get("speeds", {}).get(str(i))
+                if type(saved_speed) is int and 1 <= saved_speed <= 8:
+                    servo["speed"] = saved_speed
                 for direction in ("negative", "positive"):
                     binding = data.get("bindings", {}).get(str(i), {}).get(direction)
                     if self._valid_binding(binding):
@@ -115,6 +118,7 @@ class Controller:
     def _save_config(self):
         data = {"names": {str(s["id"]): s["name"] for s in self.channels},
                 "bindings": self.bindings,
+                "speeds": {str(s["id"]): s["speed"] for s in self.channels},
                 "mapped_limits": {str(s["id"]): {"min": s["map_min"], "max": s["map_max"]} for s in self.channels},
                 "calibration": {str(s["id"]): {
                     "min_us": s["min_us"], "max_us": s["max_us"],
@@ -199,6 +203,14 @@ class Controller:
                             0 <= minimum < 90 < maximum <= 180):
                         raise ValueError("Limits must satisfy 0 <= minimum < 90 < maximum <= 180")
                     servo["map_min"], servo["map_max"] = minimum, maximum
+                    self._save_config()
+                elif op == "speed":
+                    if servo["armed"]:
+                        raise ValueError("Disarm channel before setting movement speed")
+                    speed = payload.get("speed")
+                    if type(speed) is not int or not 1 <= speed <= 8:
+                        raise ValueError("Speed must be between 1 and 8 degrees per step")
+                    servo["speed"] = speed
                     self._save_config()
                 elif op == "release":
                     if self.driver:
